@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <!-- Your BattleTech install. Only read from (game DLLs are referenced, never copied). -->
+    <BattleTechDir>C:\Program Files (x86)\Steam\steamapps\common\BATTLETECH</BattleTechDir>
+    <!-- Optional: a COPY of the game used for testing. The build deploys Mods\BattletechCoop there. -->
+    <TestInstallDir></TestInstallDir>
+  </PropertyGroup>
+</Project>

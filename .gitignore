@@ -1,0 +1,7 @@
+bin/
+obj/
+*.user
+.vs/
+GameDir.props
+local/
+ca/

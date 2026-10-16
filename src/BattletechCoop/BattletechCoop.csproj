@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <Import Project="..\..\GameDir.props" Condition="Exists('..\..\GameDir.props')" />
+
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>7.3</LangVersion>
+    <AssemblyName>BattletechCoop</AssemblyName>
+    <RootNamespace>BattletechCoop</RootNamespace>
+    <Version>0.0.1</Version>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <ManagedDir>$(BattleTechDir)\BattleTech_Data\Managed</ManagedDir>
+  </PropertyGroup>
+
+  <Target Name="CheckGameDir" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(ManagedDir)\Assembly-CSharp.dll')"
+           Text="BattleTech assemblies not found at '$(ManagedDir)'. Copy GameDir.props.example to GameDir.props and set BattleTechDir." />
+  </Target>
+
+  <!-- Game assemblies: referenced, never copied to output. -->
+  <ItemGroup>
+    <Reference Include="Assembly-CSharp"><HintPath>$(ManagedDir)\Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp-firstpass"><HintPath>$(ManagedDir)\Assembly-CSharp-firstpass.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(ManagedDir)\0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(ManagedDir)\UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Newtonsoft.Json"><HintPath>$(ManagedDir)\Newtonsoft.Json.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="mod.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Deploy only to a test copy of the game, never to the real install. -->
+  <Target Name="DeployToTestInstall" AfterTargets="Build" Condition="'$(TestInstallDir)' != ''">
+    <Error Condition="'$(TestInstallDir)' == '$(BattleTechDir)'" Text="TestInstallDir must be a copy of the game, not BattleTechDir." />
+    <Copy SourceFiles="$(TargetPath);$(OutDir)mod.json" DestinationFolder="$(TestInstallDir)\Mods\BattletechCoop" />
+  </Target>
+
+</Project>
