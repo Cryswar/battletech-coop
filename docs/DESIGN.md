@@ -106,6 +106,23 @@ Non-goals: separate companies per player, PvP, joining without owning the game.
 | M6 | Bot QA suite, installer, Steam invite flow | `automated` QA level honestly earned |
 | M7 | BTA 3062 compatibility pass | Desync-free skirmish under BTA |
 
+## Verified in game
+
+**2026-10-16, M0 smoke test** (test copy, ModTek v4.5.1, one skirmish vs AI, 3 rounds):
+
+- The mod loads under ModTek, and the main menu shows `/W MODTEK`. Harmony 1.2 patching works
+  under ModTek's shim.
+- `InvocationHandler.GenericInvoke` runs for **every** MessageCenter message, not just
+  invocations: 1,242 calls, of which 25 were invocations.
+- All 25 invocations went through it: 14 moves, 5 attacks, 4 reserves, 2 sensor locks. That
+  includes the AI's moves (`AbstractActorMovementInvocation`, created by
+  `AITeam.makeNormalMoveInvocation`) and the player's (`MechMovementInvocation`, created by
+  `SelectionStateMoveBase.CreateMoveOrders`).
+- Invocations are created with `IsNetRouted = true` even in single-player. `GenericInvoke` only
+  bypasses routing because no network game is active.
+- Invocation IDs are `<machine prefix>.<counter>` (here `P1TDG.0` to `P1TDG.24`), so IDs from
+  different machines don't collide. Seeds are small integers (max seen 98187).
+
 ## Open questions
 
 - Can a mid-mission save be loaded identically on another PC? This is needed for reconnecting.
