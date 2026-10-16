@@ -176,7 +176,9 @@ namespace BattletechCoop
         private void OnGameMessage(byte sender, ushort channel, byte[] payload)
         {
             if (channel != TestChannel) return;
-            Notify($"Test message from player {sender}: {payload.Length} bytes, {Encoding.UTF8.GetString(payload, 0, Math.Min(payload.Length, 80))}");
+            // Large test messages are the text followed by zero padding; show only the text.
+            var text = Encoding.UTF8.GetString(payload, 0, Math.Min(payload.Length, 80)).Split('\0')[0];
+            Notify($"Test message from player {sender}: {payload.Length} bytes, {text}");
         }
 
         public void SendTestMessage(int extraBytes = 0)
