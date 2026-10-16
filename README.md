@@ -30,6 +30,14 @@ game and run the exact same mod list.
 3. Optional: set `TestInstallDir` in `GameDir.props` to a **copy** of the game to have the
    build deploy `Mods/BattletechCoop/` there.
 
+## Release zip
+
+`powershell -ExecutionPolicy Bypass -File tools\make-release.ps1` builds
+`dist\BattletechCoop-<version>-ModTek-<version>.zip`: the official ModTek release (hash-checked,
+unmodified, LGPL-2.1 with source link) plus this mod's Release build and
+`BattletechCoop-README.txt` with install, test and uninstall steps. Every player installs the same
+zip into their game folder, so their mod fingerprints match.
+
 ## Testing
 
 - Network core (no game needed): `dotnet run --project tests/NetTests`. It runs host and guests
