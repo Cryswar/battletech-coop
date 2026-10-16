@@ -32,6 +32,11 @@ namespace BattletechCoop
         private string modsDirectory;
         private string manifest;
         private Callback<GameLobbyJoinRequested_t> lobbyJoinRequested;
+        private Callback<GameRichPresenceJoinRequested_t> richPresenceJoinRequested;
+        private bool steamReady;
+        private ulong pendingLobby;
+        private string pendingName;
+        private string lobbyField = "";
         private bool showWindow;
         private Rect windowRect = new Rect(40, 40, 420, 360);
         private string joinAddress = "127.0.0.1:" + DefaultTcpPort;
@@ -52,9 +57,24 @@ namespace BattletechCoop
         {
             manifest = ModManifest.Compute(modsDirectory);
             Log.Info($"Mod manifest: {manifest}");
-            if (SteamManager.Initialized)
-                lobbyJoinRequested = Callback<GameLobbyJoinRequested_t>.Create(OnLobbyJoinRequested);
             HandleLaunchArguments();
+        }
+
+        // ModTek starts mods before the game initializes Steam, so Steam callbacks are registered
+        // on the first frame where SteamManager reports ready, not in Start().
+        private void EnsureSteam()
+        {
+            if (steamReady || !SteamManager.Initialized) return;
+            steamReady = true;
+            lobbyJoinRequested = Callback<GameLobbyJoinRequested_t>.Create(OnLobbyJoinRequested);
+            richPresenceJoinRequested = Callback<GameRichPresenceJoinRequested_t>.Create(OnRichPresenceJoinRequested);
+            Log.Info($"Steam ready as '{SteamFriends.GetPersonaName()}'; listening for invites");
+            if (pendingLobby != 0)
+            {
+                var lobby = pendingLobby;
+                pendingLobby = 0;
+                JoinSteam(lobby, pendingName);
+            }
         }
 
         private void HandleLaunchArguments()
@@ -77,7 +97,12 @@ namespace BattletechCoop
                 {
                     case "-coop-host-tcp": HostTcp(int.Parse(args[i + 1]), lan, name); return;
                     case "-coop-join-tcp": JoinTcp(args[i + 1], name); return;
-                    case "+connect_lobby": JoinSteam(ulong.Parse(args[i + 1]), name); return;
+                    case "+connect_lobby":
+                        // Steam isn't initialized yet this early; EnsureSteam() joins once it is.
+                        pendingLobby = ulong.Parse(args[i + 1]);
+                        pendingName = name;
+                        Log.Info($"Launched from a Steam invite for lobby {pendingLobby}; joining once Steam is ready");
+                        return;
                 }
             }
         }
@@ -117,14 +142,14 @@ namespace BattletechCoop
         {
             if (!CanStart()) return;
             if (!SteamManager.Initialized) { Notify("Steam is not running"); return; }
-            Begin(CoopSession.Host(SteamTransport.Host(4), DefaultName(name), ModVersion, manifest, Log.Info));
+            Begin(CoopSession.Host(SteamTransport.Host(4, Log.Info), DefaultName(name), ModVersion, manifest, Log.Info));
         }
 
         public void JoinSteam(ulong lobby, string name = null)
         {
             if (!CanStart()) return;
             if (!SteamManager.Initialized) { Notify("Steam is not running"); return; }
-            Begin(CoopSession.Join(SteamTransport.Join(lobby), DefaultName(name), ModVersion, manifest, Log.Info));
+            Begin(CoopSession.Join(SteamTransport.Join(lobby, Log.Info), DefaultName(name), ModVersion, manifest, Log.Info));
         }
 
         public void Leave()
@@ -167,8 +192,18 @@ namespace BattletechCoop
 
         private void OnLobbyJoinRequested(GameLobbyJoinRequested_t request)
         {
-            Log.Info($"Steam invite accepted: lobby {request.m_steamIDLobby.m_SteamID}");
+            Log.Info($"Steam invite accepted: lobby {request.m_steamIDLobby.m_SteamID} from {request.m_steamIDFriend.m_SteamID}");
             JoinSteam(request.m_steamIDLobby.m_SteamID);
+        }
+
+        // "Join Game" on a friend in the Steam friends list while our game is running.
+        private void OnRichPresenceJoinRequested(GameRichPresenceJoinRequested_t request)
+        {
+            Log.Info($"Steam Join Game: '{request.m_rgchConnect}' from {request.m_steamIDFriend.m_SteamID}");
+            ulong lobby;
+            var parts = (request.m_rgchConnect ?? "").Split(' ');
+            if (parts.Length == 2 && parts[0] == "+connect_lobby" && ulong.TryParse(parts[1], out lobby))
+                JoinSteam(lobby);
         }
 
         private void Notify(string message)
@@ -182,6 +217,7 @@ namespace BattletechCoop
             if (Input.GetKeyDown(KeyCode.C) && Input.GetKey(KeyCode.LeftControl) && Input.GetKey(KeyCode.LeftShift))
                 showWindow = !showWindow;
 
+            EnsureSteam();
             if (Session == null) return;
             try
             {
@@ -220,8 +256,13 @@ namespace BattletechCoop
             if (Session == null || !Session.IsOpen)
             {
                 GUILayout.Label("Not connected.");
-                GUILayout.BeginHorizontal();
+                GUILayout.Label(steamReady ? "Steam ready" : "Waiting for Steam...");
                 if (GUILayout.Button("Host via Steam")) HostSteam();
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("Lobby ID", GUILayout.Width(60));
+                lobbyField = GUILayout.TextField(lobbyField, GUILayout.Width(170));
+                ulong lobbyId;
+                if (GUILayout.Button("Join Steam lobby") && ulong.TryParse(lobbyField.Trim(), out lobbyId)) JoinSteam(lobbyId);
                 GUILayout.EndHorizontal();
                 GUILayout.Space(8);
                 GUILayout.Label("Development (TCP):");
@@ -242,7 +283,15 @@ namespace BattletechCoop
                 foreach (var p in Session.Players)
                     GUILayout.Label($"  [{p.Index}] {p.Name}   {(p.RttMs < 0 ? "-" : p.RttMs.ToString("0") + " ms")}");
                 var steam = Session.Transport as SteamTransport;
-                if (steam != null && steam.LobbyReady && GUILayout.Button("Invite Steam friends")) steam.InviteFriends();
+                if (steam != null && steam.LobbyReady)
+                {
+                    GUILayout.BeginHorizontal();
+                    GUILayout.Label($"Lobby {steam.Lobby.m_SteamID}");
+                    if (GUILayout.Button("Copy ID", GUILayout.Width(70))) GUIUtility.systemCopyBuffer = steam.Lobby.m_SteamID.ToString();
+                    GUILayout.EndHorizontal();
+                    if (Session.Role == SessionRole.Host && GUILayout.Button("Invite Steam friends")) steam.InviteFriends();
+                }
+                if (Session.State != SessionState.Active) GUILayout.Label("Connecting to host...");
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button("Send test message")) SendTestMessage();
                 if (GUILayout.Button("Send 2 MB test")) SendTestMessage(2 * 1024 * 1024);

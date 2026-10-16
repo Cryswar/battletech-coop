@@ -48,9 +48,14 @@ Install (every player, same zip)
 
 Connection test
 ---------------
-- Everyone starts the game and waits in the main menu.
-- Host: press Ctrl+Shift+C, click "Host via Steam", then "Invite Steam friends".
-- Friend: accept the invite in Steam. The co-op window (Ctrl+Shift+C) should list both players.
+- Everyone starts the game and waits in the main menu until the co-op window (Ctrl+Shift+C)
+  says "Steam ready". This can take about 20 seconds after the game starts.
+- Host: click "Host via Steam", then "Invite Steam friends".
+- Friend: accept the invite in Steam. The co-op window should list both players.
+  If the invite does nothing, try either of these:
+    a) In the Steam friends list, right-click the host and choose "Join Game".
+    b) The host clicks "Copy ID" next to the lobby number and sends it over chat. The friend
+       pastes it into "Lobby ID" and clicks "Join Steam lobby".
 - Both: click "Send test message" and "Send 2 MB test". The other side's window shows the
   message at the bottom.
 - Check that the "Mods:" line at the bottom of the window is identical for everyone.

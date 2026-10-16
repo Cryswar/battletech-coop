@@ -17,6 +17,7 @@ namespace BattletechCoop.Net
         private const byte ChunkLast = 1;
 
         private readonly bool isHost;
+        private readonly Action<string> log;
         private readonly Queue<TransportEvent> pending = new Queue<TransportEvent>();
         private readonly HashSet<ulong> connected = new HashSet<ulong>();
         private readonly Dictionary<ulong, List<byte[]>> partial = new Dictionary<ulong, List<byte[]>>();
@@ -33,9 +34,10 @@ namespace BattletechCoop.Net
         public CSteamID Lobby => lobby;
         public bool LobbyReady => lobby != CSteamID.Nil;
 
-        private SteamTransport(bool isHost)
+        private SteamTransport(bool isHost, Action<string> log)
         {
             this.isHost = isHost;
+            this.log = log ?? (_ => { });
             sessionRequest = Callback<P2PSessionRequest_t>.Create(OnSessionRequest);
             connectFail = Callback<P2PSessionConnectFail_t>.Create(OnConnectFail);
             lobbyChatUpdate = Callback<LobbyChatUpdate_t>.Create(OnLobbyChatUpdate);
@@ -43,19 +45,25 @@ namespace BattletechCoop.Net
             lobbyCreated = CallResult<LobbyCreated_t>.Create(OnLobbyCreated);
         }
 
-        public static SteamTransport Host(int maxPlayers)
+        public static SteamTransport Host(int maxPlayers, Action<string> log = null)
         {
-            var transport = new SteamTransport(true) { Name = "Steam host (creating lobby)" };
+            var transport = new SteamTransport(true, log) { Name = "Steam host (creating lobby)" };
             transport.lobbyCreated.Set(SteamMatchmaking.CreateLobby(ELobbyType.k_ELobbyTypeFriendsOnly, maxPlayers));
+            transport.log("Steam: creating friends-only lobby");
             return transport;
         }
 
-        public static SteamTransport Join(ulong lobbyId)
+        public static SteamTransport Join(ulong lobbyId, Action<string> log = null)
         {
-            var transport = new SteamTransport(false) { Name = $"Steam guest -> lobby {lobbyId}" };
+            var transport = new SteamTransport(false, log) { Name = $"Steam guest -> lobby {lobbyId}" };
             SteamMatchmaking.JoinLobby(new CSteamID(lobbyId));
+            transport.log($"Steam: joining lobby {lobbyId}");
             return transport;
         }
+
+        // The value Steam passes back (as launch args or GameRichPresenceJoinRequested_t) when a
+        // friend uses "Join Game" on the host in their friends list.
+        public static string ConnectString(ulong lobbyId) => "+connect_lobby " + lobbyId;
 
         public void InviteFriends()
         {
@@ -111,7 +119,9 @@ namespace BattletechCoop.Net
             if (shutDown) return;
             foreach (var peer in new List<ulong>(connected))
                 SteamNetworking.CloseP2PSessionWithUser(new CSteamID(peer));
+            if (isHost) SteamFriends.ClearRichPresence();
             if (LobbyReady) SteamMatchmaking.LeaveLobby(lobby);
+            log("Steam: left lobby");
             shutDown = true;
             sessionRequest.Unregister();
             connectFail.Unregister();
@@ -175,7 +185,9 @@ namespace BattletechCoop.Net
             }
             lobby = new CSteamID(result.m_ulSteamIDLobby);
             SteamMatchmaking.SetLobbyData(lobby, LobbyKey, Protocol.ProtocolVersion.ToString());
+            SteamFriends.SetRichPresence("connect", ConnectString(lobby.m_SteamID));
             Name = $"Steam host (lobby {lobby.m_SteamID})";
+            log($"Steam: lobby {lobby.m_SteamID} created; friends can be invited or use Join Game");
         }
 
         private void OnLobbyEnter(LobbyEnter_t entered)
@@ -183,11 +195,13 @@ namespace BattletechCoop.Net
             if (shutDown || isHost) return;
             if (entered.m_EChatRoomEnterResponse != (uint)EChatRoomEnterResponse.k_EChatRoomEnterResponseSuccess)
             {
+                log("Steam: lobby join failed: " + (EChatRoomEnterResponse)entered.m_EChatRoomEnterResponse);
                 pending.Enqueue(TransportEvent.Disconnected(0, "could not join Steam lobby: " + (EChatRoomEnterResponse)entered.m_EChatRoomEnterResponse));
                 return;
             }
             lobby = new CSteamID(entered.m_ulSteamIDLobby);
             owner = SteamMatchmaking.GetLobbyOwner(lobby);
+            log($"Steam: entered lobby {lobby.m_SteamID}, host is {owner.m_SteamID}; opening P2P");
             // The first packet we send opens the P2P session; the host accepts it because we are in its lobby.
             Connect(owner.m_SteamID);
         }
@@ -199,13 +213,19 @@ namespace BattletechCoop.Net
             if (isHost ? IsLobbyMember(remote) : remote == owner)
             {
                 SteamNetworking.AcceptP2PSessionWithUser(remote);
+                log($"Steam: accepted P2P session from {remote.m_SteamID}");
                 Connect(remote.m_SteamID);
+            }
+            else
+            {
+                log($"Steam: ignored P2P session request from {remote.m_SteamID} (not in our lobby)");
             }
         }
 
         private void OnConnectFail(P2PSessionConnectFail_t failure)
         {
             if (shutDown) return;
+            log($"Steam: P2P to {failure.m_steamIDRemote.m_SteamID} failed, error {failure.m_eP2PSessionError}");
             Drop(failure.m_steamIDRemote.m_SteamID, "P2P connection failed (error " + failure.m_eP2PSessionError + ")");
         }
 

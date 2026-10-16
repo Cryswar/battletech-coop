@@ -151,7 +151,17 @@ Implemented (M0):
 - ModTek allows only one game process per install folder (`Mods/.modtek/ModTekPreloader.lock`,
   no setting to disable it). The second test folder copies the small files and junctions
   `BattleTech_Data` to the first.
-- **Not yet tested:** the Steam transport. It needs a second Steam account on another PC, or a
+- **First Steam test (0.0.1) failed:** the friend accepted the invite, but nothing happened.
+  The cause was that ModTek starts mods about 19 s before the game initializes Steam, so the
+  invite callback was never registered. In 0.0.2, Steam callbacks are registered on the first
+  frame where `SteamManager.Initialized` is true (confirmed in a test copy's log). Rich presence
+  `connect` was added for friends-list "Join Game", plus a manual lobby-ID join.
+- **2026-10-16, Steam test (0.0.2): PASS** between two PCs on different networks (owner and a
+  friend, real Steam installs from the release zip, same fingerprint `4F5D4A01439DBEA9`). The
+  invite was accepted while the game was running, and lobby → P2P → handshake took ~5 s, mostly
+  waiting for Steam relay to accept the session. Names and ping were shown on both sides.
+  Test messages arrived both ways. A 2 MB message took 5–6 s each way (~350 KB/s through the
+  relay), so save transfer (M2) needs compression and a progress indicator. It needs a second Steam account on another PC, or a
   friend. The in-game window (Ctrl+Shift+C) has also not been exercised by hand.
 
 ## Open questions
