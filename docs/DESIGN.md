@@ -91,7 +91,23 @@ Non-goals: separate companies per player, PvP, joining without owning the game.
   plus `SteamNetworking` P2P under app 637090, with Steam relay, no port forwarding and
   invites through the Steam overlay.
 - We do **not** depend on HBS/Paradox online services.
-- A loopback transport (two clients on one PC) is used for development and bot QA.
+- A TCP transport (two clients on one PC, or LAN) is used for development and bot QA.
+
+Implemented (M0):
+
+- `ITransport`: reliable, ordered messages. `TcpTransport` uses 4-byte length-prefixed frames.
+  `SteamTransport` uses a friends-only Steam lobby plus `SteamNetworking` reliable P2P to the
+  lobby owner, splitting messages into 512 KB chunks (reliable P2P caps a packet near 1 MB).
+  Peer id 0 is reserved for "the transport itself failed".
+- `CoopSession`: the host is player 0. A guest sends `Hello` (protocol version, mod version,
+  mod-list fingerprint, name), and the host answers `Welcome` (player index) or `Reject` (reason).
+  The host relays `PlayerJoined`/`PlayerLeft`. Pings run every second, smoothed into an RTT.
+  Peers time out after 20 s silent, or 10 s without a handshake. `Game` messages carry a
+  ushort channel and an opaque payload; this is what M1 will send invocations over.
+- Mod-list fingerprint: SHA-256 over every `mod.json` and every DLL under `Mods/`, excluding
+  `.modtek/`. A guest whose fingerprint differs from the host's is refused.
+- Joining from a Steam invite: the `GameLobbyJoinRequested_t` callback, or `+connect_lobby <id>`
+  when Steam launches the game from an invite.
 
 ## Milestones
 
@@ -122,6 +138,21 @@ Non-goals: separate companies per player, PvP, joining without owning the game.
   bypasses routing because no network game is active.
 - Invocation IDs are `<machine prefix>.<counter>` (here `P1TDG.0` to `P1TDG.24`), so IDs from
   different machines don't collide. Seeds are small integers (max seen 98187).
+
+**2026-10-16, M0 network test**:
+
+- `dotnet run --project tests/NetTests`: 12/12 pass. Covers handshake and roster, RTT,
+  messages both ways, a 4 MB message, rejection for mod-list/version mismatch and a full
+  session, a guest leaving, the host leaving, connect failure, and handshake timeout.
+- `tools/two-copy-test.ps1`: **PASS**. Two game processes (TestInstall hosting, TestInstall2
+  joining over localhost TCP, both under ModTek 4.5.1) agreed on the mod fingerprint
+  (`9C2FD5F8E6C41E4D`, 26 files). The handshake took ~4 ms, and each side received the other's
+  test message.
+- ModTek allows only one game process per install folder (`Mods/.modtek/ModTekPreloader.lock`,
+  no setting to disable it). The second test folder copies the small files and junctions
+  `BattleTech_Data` to the first.
+- **Not yet tested:** the Steam transport. It needs a second Steam account on another PC, or a
+  friend. The in-game window (Ctrl+Shift+C) has also not been exercised by hand.
 
 ## Open questions
 

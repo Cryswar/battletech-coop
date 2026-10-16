@@ -25,6 +25,8 @@
     <Reference Include="0Harmony"><HintPath>$(ManagedDir)\0Harmony.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine"><HintPath>$(ManagedDir)\UnityEngine.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="UnityEngine.CoreModule"><HintPath>$(ManagedDir)\UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(ManagedDir)\UnityEngine.IMGUIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.InputModule"><HintPath>$(ManagedDir)\UnityEngine.InputModule.dll</HintPath><Private>false</Private></Reference>
     <Reference Include="Newtonsoft.Json"><HintPath>$(ManagedDir)\Newtonsoft.Json.dll</HintPath><Private>false</Private></Reference>
   </ItemGroup>
 
@@ -32,10 +34,14 @@
     <None Include="mod.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <!-- Deploy only to a test copy of the game, never to the real install. -->
+  <!-- Deploy only to test copies of the game (TestInstallDir may list several, separated by ';'),
+       never to the real install. -->
   <Target Name="DeployToTestInstall" AfterTargets="Build" Condition="'$(TestInstallDir)' != ''">
-    <Error Condition="'$(TestInstallDir)' == '$(BattleTechDir)'" Text="TestInstallDir must be a copy of the game, not BattleTechDir." />
-    <Copy SourceFiles="$(TargetPath);$(OutDir)mod.json" DestinationFolder="$(TestInstallDir)\Mods\BattletechCoop" />
+    <ItemGroup>
+      <TestInstall Include="$(TestInstallDir)" />
+    </ItemGroup>
+    <Error Condition="'%(TestInstall.Identity)' == '$(BattleTechDir)'" Text="TestInstallDir must be a copy of the game, not BattleTechDir." />
+    <Copy SourceFiles="$(TargetPath);$(OutDir)mod.json" DestinationFolder="%(TestInstall.Identity)\Mods\BattletechCoop" />
   </Target>
 
 </Project>

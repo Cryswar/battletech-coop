@@ -2,7 +2,9 @@
   <PropertyGroup>
     <!-- Your BattleTech install. Only read from (game DLLs are referenced, never copied). -->
     <BattleTechDir>C:\Program Files (x86)\Steam\steamapps\common\BATTLETECH</BattleTechDir>
-    <!-- Optional: a COPY of the game used for testing. The build deploys Mods\BattletechCoop there. -->
+    <!-- Optional: COPIES of the game used for testing, separated by ';'. The build deploys
+         Mods\BattletechCoop to each. ModTek allows one game process per folder, so testing two
+         players on one PC needs two folders (the second can junction BattleTech_Data to the first). -->
     <TestInstallDir></TestInstallDir>
   </PropertyGroup>
 </Project>

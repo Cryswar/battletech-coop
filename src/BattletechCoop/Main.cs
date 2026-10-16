@@ -29,6 +29,7 @@ namespace BattletechCoop
                 var harmony = HarmonyInstance.Create("battletech.coop");
                 harmony.PatchAll(Assembly.GetExecutingAssembly());
                 Log.Info($"BattletechCoop {Assembly.GetExecutingAssembly().GetName().Version} loaded from {directory}");
+                CoopController.Create(directory);
             }
             catch (Exception e)
             {
@@ -39,11 +40,22 @@ namespace BattletechCoop
 
     internal static class Log
     {
+        private static readonly object gate = new object();
         private static StreamWriter writer;
 
+        // A second game process on the same install (local co-op testing) finds the log locked
+        // and writes to BattletechCoop.<pid>.log instead.
         public static void Init(string path)
         {
-            writer = new StreamWriter(path, append: false) { AutoFlush = true };
+            try
+            {
+                writer = new StreamWriter(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read)) { AutoFlush = true };
+            }
+            catch (IOException)
+            {
+                var alt = Path.Combine(Path.GetDirectoryName(path), $"{Path.GetFileNameWithoutExtension(path)}.{System.Diagnostics.Process.GetCurrentProcess().Id}.log");
+                writer = new StreamWriter(new FileStream(alt, FileMode.Create, FileAccess.Write, FileShare.Read)) { AutoFlush = true };
+            }
         }
 
         public static void Info(string message) => Write("INFO", message);
@@ -51,7 +63,9 @@ namespace BattletechCoop
         public static void Error(string message, Exception e = null) =>
             Write("ERROR", e == null ? message : message + "\n" + e);
 
-        private static void Write(string level, string message) =>
-            writer?.WriteLine($"{DateTime.Now:HH:mm:ss.fff} [{level}] {message}");
+        private static void Write(string level, string message)
+        {
+            lock (gate) writer?.WriteLine($"{DateTime.Now:HH:mm:ss.fff} [{level}] {message}");
+        }
     }
 }
