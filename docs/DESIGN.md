@@ -46,6 +46,55 @@ Non-goals: separate companies per player, PvP, joining without owning the game.
 - **Desync detection:** `NetworkRandom` call history plus the game's `StatsCompare` machinery.
   The game compares a hash after every invocation. On mismatch it dumps both histories.
 
+#### M1 protocol (skirmish vs AI)
+
+Found in the game code (build 20387569):
+
+- **Combat start.** The skirmish screen builds a `Contract`, then calls
+  `GameInstance.LaunchContract`. MP sends the whole contract with the game's own serializer
+  (`BattleTech.Serialization.Serializer`, target `All`(15), mask `HAS_ANY`(2), the same arguments
+  as `NetworkMessageResolver`) inside a `GameContractNetworkMessage`. We do the same. A host
+  prefix on `LaunchContract` sends the contract, and the guest launches it from its main menu.
+- **Actor GUIDs are deterministic**: `UnitSpawnPointGameLogic.GetNextUnitGuid` returns
+  `"<spawn point GUID>.<index>"`. The team GUIDs are constants: Player 1
+  `bf40fd39-ccf9-47c4-94a6-061809681140`, Player 2 `757173dd-b4e1-4bb5-9bee-d78e623cc867`.
+- **Invocations on the wire.** The invocations' `ToJSON` throws `NotImplementedException`.
+  MP wraps the message in a `NetMessageCenterMessage` and runs it through `Serializer`, and so
+  do we.
+- **AI.** `AITeam.think()` returns immediately if `ThinksOnThisMachine` is false. But with that
+  flag false, `TurnActorProcessActivation` leaves `currentUnit` null and marks the team complete
+  at once, so the flag can't be used for a mirrored AI. Instead, the guest skips `think()` (no
+  decisions are made there), and its `isComplete` is driven by the host.
+
+Stream (host → guests, one ordered channel). Each item carries `seq` and `activation`, the
+host's count of `TurnDirector._SendTurnActorActivateMessage` calls when the item was produced:
+
+| Item | Produced on host | Applied on guest |
+|---|---|---|
+| `Invocation` (type, serialized bytes, state text before it ran) | prefix of every concrete `InvocationMessage.Invoke` override, i.e. at real execution time, in real execution order | published into the guest's `MessageCenter` with `WasNetRouted = true`, so `GenericInvoke` runs it |
+| `AIComplete` (team GUID) | `AITeam.think` / `TurnActorProcessActivation` postfix, when `isComplete` turns true | sets that `AITeam`'s `isComplete` |
+
+The guest applies the head item only when its combat has started, no order is active, the
+`InvocationHandler` has no queued invocations, and its own activation count equals the item's.
+That gating is the barrier: the guest can lag, but never runs ahead of or diverges from the host's
+turn structure.
+
+Guest-local invocations (HUD orders) are dropped in `GenericInvoke` with a notice. Routing
+them to the host is M3, when there is ownership to check them against.
+
+**Desync detection.** Before each invocation runs, both sides render a canonical state text:
+round, phase and RNG state, then per actor sorted by GUID: position (cm), facing, dead/activated
+flags, heat, stability, evasive pips, and armor and structure per location. The host sends its
+text in the item. The guest compares it with its own and logs the first differing lines. The
+seq and invocation ID pinpoint the step.
+
+**Test mode** (`-coop-autoplay`, sent to the guest in the combat-start message):
+`EncounterLayerData.CreatePlayerOneTeam` returns an `AITeam` substituting for the human. This is
+what HBS's own `DebugBridge.PlayerOneIsAIControlled` does. The host's AI then plays both sides,
+and everything flows through the stream. `-coop-autoskirmish` makes the host build and launch a
+fixed skirmish once a guest has joined: first released multiplayer map by name, first
+`IsSkirmish` encounter, fixed mech and pilot IDs.
+
 ### Unit ownership (two lances)
 
 - Everyone stays on the Player1 team. A per-unit owner table (unit GUID → player id) is sent
@@ -163,6 +212,31 @@ Implemented (M0):
   Test messages arrived both ways. A 2 MB message took 5–6 s each way (~350 KB/s through the
   relay), so save transfer (M2) needs compression and a progress indicator. It needs a second Steam account on another PC, or a
   friend. The in-game window (Ctrl+Shift+C) has also not been exercised by hand.
+
+**2026-10-16, M1 lockstep tests** (`tools/two-copy-test.ps1 -Combat`: TestInstall hosts and
+TestInstall2 joins over localhost TCP; auto-skirmish on `mapArena_AlpineRiver_iGlc`, mood
+`ArcticDayFoggy`, 4v4 (Atlas, Centurion, Hunchback, Jenner), AI playing both sides, time scale 3–4):
+
+- 60-item run: **PASS**. 26 moves, 10 attacks, 1 reserve, 25 AI completions, 0 desyncs.
+- Full mission: **PASS**. The match ran to mission over on both sides in ~3 minutes: 197 items
+  over 72 activations (64 moves, 48 attacks, 10 reserves, 2 jumps, 2 stand-ups after knockdowns,
+  72 AI completions), 0 desyncs. The guest dropped no local invocations and the game queued none
+  of the replayed ones.
+- Detector self-test (`-InjectDesyncAt 15`): **PASS**. +7 heat was injected on one guest mech
+  before seq 15, and the guest reported `DESYNC at seq 15`. The diff line names that unit with
+  `heat=0` (host) and `heat=7` (guest), everything else on the line equal, and the host logged
+  the guest's report.
+- Problems found on the way and fixed: the `Invoke` overrides name their parameter differently
+  (bind no parameters); the guest received the contract before its main menu existed (defer it,
+  and auto-skirmish waits for the guest's menu-ready report); calling `LaunchContract` directly
+  leaves the screens black (go through `Contract.Accept` and the loading curtain, like
+  `SkirmishSettings_Beta.LaunchMap`); a contract with no mood stalls loading; and the briefing's
+  "Begin mission" needs pressing (auto-pressed in autoplay).
+
+What this does not cover yet: human orders from the host's HUD (only AI-issued invocations so
+far, although the HUD's `ReserveActorInvocation` and `MechMovementInvocation` take the same
+path), guest orders (dropped until M3), Steam transport latency during combat, maps other than
+the first, and combat saves/loads.
 
 ## Open questions
 

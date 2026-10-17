@@ -1,19 +1,32 @@
-# Starts two game copies on this PC (host + guest over localhost TCP), waits until each side has
-# received the other's test message, prints both logs and closes the games.
+# Starts two game copies on this PC (host + guest over localhost TCP) and checks them, then closes the games.
 # Exit code 0 = pass. Requires Steam running and two test installs (ModTek allows one process per folder).
 #
-#   powershell -ExecutionPolicy Bypass -File tools\two-copy-test.ps1
+#   Network test (default): each side must receive the other's test message.
+#     powershell -ExecutionPolicy Bypass -File tools\two-copy-test.ps1
+#   Combat test: the host auto-launches a fixed skirmish with the AI playing both sides; the guest
+#   replays the host's stream. Passes when the guest has applied -TargetSeq stream items (or the
+#   mission ended) with zero desyncs.
+#     powershell -ExecutionPolicy Bypass -File tools\two-copy-test.ps1 -Combat [-TargetSeq 60] [-TimeScale 3]
 param(
     [string]$HostDir = 'D:\Modding\Battletech\TestInstall',
     [string]$GuestDir = 'D:\Modding\Battletech\TestInstall2',
     [int]$Port = 47637,
-    [int]$TimeoutSeconds = 300
+    [switch]$Combat,
+    [int]$TargetSeq = 60,
+    [double]$TimeScale = 3,
+    [string]$Map = '',
+    # Detector self-test: corrupt guest state before this stream item; then PASS means a DESYNC was reported.
+    [int]$InjectDesyncAt = 0,
+    [int]$TimeoutSeconds = 0
 )
 
 $ErrorActionPreference = 'Stop'
+if ($TimeoutSeconds -le 0) { $TimeoutSeconds = if ($Combat) { 1200 } else { 300 } }
 $window = @('-screen-fullscreen', '0', '-screen-width', '1024', '-screen-height', '600')
 
 function Get-CoopLog([string]$dir) { Join-Path $dir 'Mods\BattletechCoop\BattletechCoop.log' }
+
+function Read-Log([string]$log) { if (Test-Path $log) { Get-Content $log -ErrorAction SilentlyContinue } else { @() } }
 
 function Wait-ForLog([string]$log, [string]$pattern, [System.Diagnostics.Process]$proc, [datetime]$deadline) {
     while ((Get-Date) -lt $deadline) {
@@ -34,19 +47,72 @@ foreach ($dir in $HostDir, $GuestDir) {
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 $hostLog = Get-CoopLog $HostDir
 $guestLog = Get-CoopLog $GuestDir
+$hostArgs = @('-coop-host-tcp', "$Port", '-coop-name', 'HostBot')
+$guestArgs = @('-coop-join-tcp', "127.0.0.1:$Port", '-coop-name', 'GuestBot')
+if ($Combat) {
+    $hostArgs += @('-coop-autoplay', '-coop-autoskirmish')
+    if ($Map) { $hostArgs += $Map }
+    $ts = $TimeScale.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    $hostArgs += @('-coop-timescale', $ts)
+    $guestArgs += @('-coop-timescale', $ts)
+    if ($InjectDesyncAt -gt 0) { $guestArgs += @('-coop-inject-desync', "$InjectDesyncAt") }
+} else {
+    $hostArgs += '-coop-test-message'
+    $guestArgs += '-coop-test-message'
+}
+
 $hostProc = $null; $guestProc = $null
 $passed = $false
+$reason = ''
 try {
-    $hostProc = Start-Process "$HostDir\BattleTech.exe" -WorkingDirectory $HostDir -PassThru `
-        -ArgumentList (@('-coop-host-tcp', "$Port", '-coop-name', 'HostBot', '-coop-test-message') + $window)
+    $hostProc = Start-Process "$HostDir\BattleTech.exe" -WorkingDirectory $HostDir -PassThru -ArgumentList ($hostArgs + $window)
     Write-Host "host pid $($hostProc.Id)"
-    if (Wait-ForLog $hostLog 'Hosting via' $hostProc $deadline) {
-        $guestProc = Start-Process "$GuestDir\BattleTech.exe" -WorkingDirectory $GuestDir -PassThru `
-            -ArgumentList (@('-coop-join-tcp', "127.0.0.1:$Port", '-coop-name', 'GuestBot', '-coop-test-message') + $window)
-        Write-Host "guest pid $($guestProc.Id)"
+    if (-not (Wait-ForLog $hostLog 'Hosting via' $hostProc $deadline)) { throw 'host did not start hosting' }
+    $guestProc = Start-Process "$GuestDir\BattleTech.exe" -WorkingDirectory $GuestDir -PassThru -ArgumentList ($guestArgs + $window)
+    Write-Host "guest pid $($guestProc.Id)"
+
+    if (-not $Combat) {
         $guestGot = Wait-ForLog $guestLog 'Test message from player 0' $guestProc $deadline
         $hostGot = Wait-ForLog $hostLog 'Test message from player 1' $hostProc $deadline
         $passed = $guestGot -and $hostGot
+    }
+    else {
+        $lastReport = Get-Date
+        while ($true) {
+            if ((Get-Date) -gt $deadline) { $reason = "timed out after $TimeoutSeconds s"; break }
+            if ($hostProc.HasExited) { $reason = "host exited (code $($hostProc.ExitCode))"; break }
+            if ($guestProc.HasExited) { $reason = "guest exited (code $($guestProc.ExitCode))"; break }
+            $h = Read-Log $hostLog; $g = Read-Log $guestLog
+            # Case-sensitive: status lines say "desyncs 0", only real reports say "DESYNC".
+            $bad = @($h + $g | Where-Object { $_ -cmatch 'DESYNC|\[ERROR\]' })
+            if ($InjectDesyncAt -gt 0) {
+                $caught = @($g | Where-Object { $_ -cmatch 'SYNC DESYNC at seq' })
+                if ($caught.Count -gt 0) { $passed = $true; $reason = "injected desync detected: $($caught[0])"; break }
+                $bad = @($bad | Where-Object { $_ -notmatch 'DESYNC' })
+            }
+            if ($bad.Count -gt 0) { $reason = "error or desync: $($bad[0])"; break }
+            $applied = 0
+            foreach ($line in $g) { if ($line -match 'SYNC guest: seq (\d+) ') { $applied = [int]$Matches[1] } }
+            $guestOver = @($g | Where-Object { $_ -match 'SYNC mission over' }).Count -gt 0
+            if ($applied -ge $TargetSeq -or $guestOver) {
+                if ($InjectDesyncAt -gt 0) { $reason = "injected desync at seq $InjectDesyncAt was NOT detected ($applied items applied)"; break }
+                $passed = $true
+                $reason = if ($guestOver) { "mission over on guest after $applied stream items" } else { "guest applied $applied stream items" }
+                break
+            }
+            if (((Get-Date) - $lastReport).TotalSeconds -ge 30) {
+                $sent = 0
+                foreach ($line in $h) { if ($line -match 'SYNC host: seq (\d+) ') { $sent = [int]$Matches[1] } }
+                Write-Host "$(Get-Date -Format HH:mm:ss) host sent $sent, guest applied $applied"
+                $lastReport = Get-Date
+            }
+            Start-Sleep -Seconds 1
+        }
+        # Let the logs settle, then re-check for late desyncs.
+        Start-Sleep -Seconds 2
+        $late = @((Read-Log $hostLog) + (Read-Log $guestLog) | Where-Object { $_ -cmatch 'DESYNC|\[ERROR\]' })
+        if ($InjectDesyncAt -gt 0) { $late = @($late | Where-Object { $_ -notmatch 'DESYNC' }) }
+        if ($passed -and $late.Count -gt 0) { $passed = $false; $reason = "error or desync: $($late[0])" }
     }
 }
 finally {
@@ -57,6 +123,10 @@ finally {
 
 foreach ($pair in @(@('HOST', $hostLog), @('GUEST', $guestLog))) {
     Write-Host "===== $($pair[0]) log ====="
-    if (Test-Path $pair[1]) { Get-Content $pair[1] | Where-Object { $_ -notmatch 'GenericInvoke' } } else { Write-Host '(no log)' }
+    $lines = @(Read-Log $pair[1] | Where-Object { $_ -notmatch 'GenericInvoke' })
+    if ($Combat -and $lines.Count -gt 60) {
+        $lines[0..19] + @("... ($($lines.Count - 60) lines omitted) ...") + $lines[($lines.Count - 40)..($lines.Count - 1)]
+    } else { $lines }
 }
+if ($reason) { Write-Host "REASON: $reason" }
 if ($passed) { Write-Host 'RESULT: PASS'; exit 0 } else { Write-Host 'RESULT: FAIL'; exit 1 }

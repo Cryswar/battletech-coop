@@ -20,6 +20,10 @@ namespace BattletechCoop
     //   -coop-lan                   bind the TCP host to all interfaces
     //   -coop-name <name>           player name (default: Steam persona name)
     //   -coop-test-message          once connected, send a test game message to the other side
+    //   -coop-autoplay              (host) co-op combats make Player 1 AI-controlled too (bot test)
+    //   -coop-autoskirmish [map]    (host) once a guest has joined, launch a fixed skirmish
+    //   -coop-timescale <x>         Unity time scale during combat (speeds up bot tests)
+    //   -coop-inject-desync <seq>   (guest) corrupt state before that stream item, to test desync detection
     //   +connect_lobby <id>         join a Steam lobby (Steam passes this when launching from an invite)
     public class CoopController : MonoBehaviour
     {
@@ -28,6 +32,13 @@ namespace BattletechCoop
 
         public static CoopController Instance { get; private set; }
         public CoopSession Session { get; private set; }
+        public bool Autoplay { get; private set; }
+
+        private bool autoSkirmish;
+        private string autoSkirmishMap;
+        private float autoSkirmishAt = -1;
+        private bool autoSkirmishDone;
+        private float combatTimeScale = 1f;
 
         private string modsDirectory;
         private string manifest;
@@ -88,6 +99,17 @@ namespace BattletechCoop
                 {
                     case "-coop-name": if (hasValue) name = args[i + 1]; break;
                     case "-coop-test-message": sendTestOnConnect = true; break;
+                    case "-coop-autoplay": Autoplay = true; break;
+                    case "-coop-autoskirmish":
+                        autoSkirmish = true;
+                        if (hasValue && !args[i + 1].StartsWith("-")) autoSkirmishMap = args[i + 1];
+                        break;
+                    case "-coop-inject-desync":
+                        if (hasValue) Sync.CombatSync.InjectDesyncAt = uint.Parse(args[i + 1]);
+                        break;
+                    case "-coop-timescale":
+                        if (hasValue) combatTimeScale = float.Parse(args[i + 1], System.Globalization.CultureInfo.InvariantCulture);
+                        break;
                 }
             }
             var lan = Array.IndexOf(args, "-coop-lan") >= 0;
@@ -175,6 +197,11 @@ namespace BattletechCoop
 
         private void OnGameMessage(byte sender, ushort channel, byte[] payload)
         {
+            if (channel >= Sync.CombatSync.ChannelCombatStart)
+            {
+                Sync.CombatSync.HandleGameMessage(Session, sender, channel, payload);
+                return;
+            }
             if (channel != TestChannel) return;
             // Large test messages are the text followed by zero padding; show only the text.
             var text = Encoding.UTF8.GetString(payload, 0, Math.Min(payload.Length, 80)).Split('\0')[0];
@@ -235,6 +262,41 @@ namespace BattletechCoop
                 testSent = true;
                 SendTestMessage();
             }
+
+            try
+            {
+                Sync.CombatSync.Current?.Update();
+                Sync.CombatSync.UpdateIdleGuest(Session);
+                UpdateTestModes();
+            }
+            catch (Exception e)
+            {
+                Log.Error("Combat sync update failed", e);
+            }
+        }
+
+        private void UpdateTestModes()
+        {
+            // Only with -coop-timescale, so normal play (including the game's own pause) is untouched.
+            if (!Mathf.Approximately(combatTimeScale, 1f))
+            {
+                var inCombat = Sync.CombatSync.Current != null && UnityGameInstance.BattleTechGame?.Combat != null;
+                Time.timeScale = inCombat ? combatTimeScale : 1f;
+            }
+
+            if (!autoSkirmish || autoSkirmishDone || Session.Role != SessionRole.Host) return;
+            var guests = Session.Players.Where(p => p.Index != 0).ToList();
+            if (Session.State != SessionState.Active || guests.Count == 0 || !Sync.AutoSkirmish.MainMenuShowing
+                || !guests.All(p => Sync.CombatSync.GuestsInMenu.Contains(p.Index)))
+            {
+                autoSkirmishAt = -1;
+                return;
+            }
+            // Give both games a moment in the main menu before loading.
+            if (autoSkirmishAt < 0) autoSkirmishAt = Time.realtimeSinceStartup + 5f;
+            if (Time.realtimeSinceStartup < autoSkirmishAt) return;
+            autoSkirmishDone = true;
+            Sync.AutoSkirmish.Launch(autoSkirmishMap);
         }
 
         private void OnApplicationQuit()
@@ -248,6 +310,9 @@ namespace BattletechCoop
             {
                 var label = $"Co-op {Session.Role} · {Session.State} · {Session.Players.Count()} player(s)";
                 GUI.Label(new Rect(Screen.width - 330, 8, 320, 22), label);
+                var sync = Sync.CombatSync.Current;
+                if (sync != null)
+                    GUI.Label(new Rect(Screen.width - 330, 28, 320, 22), (sync.Desyncs > 0 ? "DESYNC! " : "") + sync.Status);
             }
             if (showWindow)
                 windowRect = GUILayout.Window(0x0B7C00, windowRect, DrawWindow, "BattleTech Co-op (Ctrl+Shift+C)");

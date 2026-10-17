@@ -28,6 +28,7 @@ namespace BattletechCoop
 
                 var harmony = HarmonyInstance.Create("battletech.coop");
                 harmony.PatchAll(Assembly.GetExecutingAssembly());
+                Sync.SyncPatches.PatchInvokes(harmony);
                 Log.Info($"BattletechCoop {Assembly.GetExecutingAssembly().GetName().Version} loaded from {directory}");
                 CoopController.Create(directory);
             }

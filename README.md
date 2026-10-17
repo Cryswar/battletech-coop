@@ -47,6 +47,12 @@ zip into their game folder, so their mod fingerprints match.
   each side to receive the other's test message, prints both logs and closes the games.
   ModTek allows one game process per install folder, so the second folder is required. It can
   junction `BattleTech_Data` to the first copy.
+- Combat lockstep: `tools\two-copy-test.ps1 -Combat [-TargetSeq 60] [-TimeScale 3]`. The host
+  auto-launches a fixed 4v4 skirmish with the AI playing both sides, and the guest replays the
+  host's invocation stream. It passes when the guest has replayed `-TargetSeq` items (or the
+  mission ended) with no desync. Use `-TargetSeq 100000` for a whole match.
+  `-InjectDesyncAt <seq>` corrupts guest state on purpose; then PASS means the desync detector
+  caught it.
 - In game, **Ctrl+Shift+C** opens the co-op window: host or join over TCP, host via Steam,
   invite Steam friends, send test messages (including a 2 MB one), leave.
 
