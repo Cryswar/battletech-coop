@@ -72,8 +72,9 @@ Co-op skirmish
    finish playing out before giving the next one. If both of you act at the same moment, the
    order that reaches the host first wins, and the other player sees "Order not accepted" and
    can give it again.
-5. The top-right corner shows sync status. If it ever says "DESYNC!", please finish or quit the
-   battle and send both log files.
+5. The top-right corner shows sync status. If a red "CO-OP DESYNC" banner appears, the two games
+   no longer match: finish or quit the battle and send both BattletechCoop.log files and both
+   Mods\.modtek\battletech_log.txt files.
 
 Known limits: no saving or loading during co-op combat; if someone disconnects mid-battle, the
 battle cannot be resumed together.

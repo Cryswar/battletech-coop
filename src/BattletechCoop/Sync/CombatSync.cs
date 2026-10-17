@@ -74,6 +74,7 @@ namespace BattletechCoop.Sync
         public float NoticeUntil { get; private set; }
         public uint CombatId { get; }
         public int Desyncs { get; private set; }
+        public bool AnyDesync => Desyncs > 0 || guestDesyncs > 0;
         public uint Activation { get; private set; }
         public uint LastSeq => seq;
         public int Pending => incoming.Count;
@@ -230,7 +231,10 @@ namespace BattletechCoop.Sync
                             break;
                         case ChannelDesync:
                             if (HostActive && r.ReadUInt32() == Current.CombatId)
+                            {
+                                Current.guestDesyncs = Math.Max(Current.guestDesyncs, 1);
                                 Log.Error($"SYNC host: guest {sender} reports DESYNC at seq {r.ReadUInt32()}:\n{r.ReadString()}");
+                            }
                             break;
                         case ChannelOrderRequest:
                             if (HostActive && r.ReadUInt32() == Current.CombatId) Current.ReceiveRequest(sender, r);
@@ -268,7 +272,7 @@ namespace BattletechCoop.Sync
             };
             Send(item);
             if (Main.Settings.LogInvocations)
-                Log.Info($"SYNC host: seq {item.Seq} act {item.Activation} {item.TypeName} id={invocation.InvocationID} ({data.Length} bytes)");
+                Log.Info($"SYNC host: seq {item.Seq} act {item.Activation} {item.TypeName} id={invocation.InvocationID} actor={SyncDiagnostics.ActorOf(invocation)} ({data.Length} bytes)");
         }
 
         public void OnAITeamMaybeComplete(AITeam team)
@@ -430,7 +434,7 @@ namespace BattletechCoop.Sync
                 // GenericInvoke queued it instead of running it; the check runs when it executes.
                 Log.Info($"SYNC guest: seq {item.Seq} queued by the game before executing");
             }
-            if (Main.Settings.LogInvocations) Log.Info($"SYNC guest: seq {item.Seq} act {item.Activation} {item.TypeName} id={invocation.InvocationID}");
+            if (Main.Settings.LogInvocations) Log.Info($"SYNC guest: seq {item.Seq} act {item.Activation} {item.TypeName} id={invocation.InvocationID} actor={SyncDiagnostics.ActorOf(invocation)}");
             if (seq % 10 == 0) Log.Info($"SYNC applied={seq} desyncs={Desyncs}");
         }
 
@@ -441,7 +445,10 @@ namespace BattletechCoop.Sync
             applying = null;
             var state = StateText.Render(combat);
             if (state != item.State)
+            {
                 ReportDesync(item.Seq, $"state differs before {item.TypeName} id={invocation.InvocationID}:\n{StateText.Diff(item.State, state)}");
+                if (Desyncs == 1) Log.Info($"SYNC diag: full state at first desync (seq {item.Seq})\n--- host ---\n{item.State}--- guest ---\n{state}");
+            }
         }
 
         // ---- guest orders (shared control) ----

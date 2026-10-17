@@ -141,6 +141,10 @@ finally {
     foreach ($p in $guestProc, $hostProc) {
         if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force }
     }
+    # Wait until they are really gone, so a following run doesn't find them still exiting.
+    foreach ($p in $guestProc, $hostProc) {
+        if ($p) { [void]$p.WaitForExit(30000) }
+    }
 }
 
 foreach ($pair in @(@('HOST', $hostLog), @('GUEST', $guestLog))) {

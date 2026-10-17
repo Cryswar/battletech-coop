@@ -292,6 +292,29 @@ which used string IDs. The guest's game log showed the spawn crashing in
   sides log 4 identical harmless `Team.OnVisibilityIncreased` errors: an audio and VFX cue whose
   spotting unit is not in the AI-substituted player team, which happens in autoplay only.
 
+**2026-10-17, second human test (0.0.4, two PCs over Steam): played well, one desync.** Both
+players gave orders through the HUD (4 guest orders: moves and an attack; 13 host orders), with
+no visible lag. The players saw nothing wrong, but the guest reported `DESYNC at seq 4`: player
+mech `461141c2….0` had moved and activated on the host (`act=1 evp=4`, new position) but was
+untouched on the guest (`act=0 evp=0`, spawn position). The state matched before seq 3, so seq
+3, the host's first own move (`P1TDG.0`), executed on the guest with no effect. This was during
+the free-move phase before contact (all four player moves in activation 1). No further desyncs
+were reported, but the two games disagreed about that mech from then on.
+
+Ruled out from the code and logs: the duplicate-ID check (`InvocationHandler.previousInvocations`;
+no "Blocked invocation" in the guest log, although both PCs do generate `P1TDG.<n>` IDs, since
+the prefix comes from the local team); HUD ID matching (`SelectionState.PublishInvocation` only
+listens synchronously, so the guest's HUD logs "No Orders assigned from invocation!" for every
+order it sends to the host, which is harmless); and an undo path (unreferenced).
+`AbstractActorMovementInvocation.Invoke` always publishes an `ActorMovementSequence`.
+
+Leading suspect, not confirmed: in non-interleaved mode, `StackManager.AddNormalStackSequence`
+calls `StopCancelableSequences`, which silently cancels running cancelable sequences, so a
+guest-local sequence added at the wrong moment could cancel a replayed move. 0.0.5 adds
+diagnostics to settle it: every cancelled `OrderSequence` is logged with its unit and the call
+stack, every stream line names its unit, and the full state of both sides is dumped at the first
+desync. There is also a large red on-screen banner, because the corner text went unnoticed.
+
 Not covered by these tests: a human using the HUD on either machine, in particular how the HUD
 reacts when the other player's order moves a unit, and whether the guest's HUD waits correctly
 between sending an order and seeing it replayed. That needs the 0.0.3 human test.

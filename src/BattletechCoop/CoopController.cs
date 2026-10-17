@@ -316,13 +316,33 @@ namespace BattletechCoop
                 var sync = Sync.CombatSync.Current;
                 if (sync != null)
                 {
-                    GUI.Label(new Rect(Screen.width - 330, 28, 320, 22), (sync.Desyncs > 0 ? "DESYNC! " : "") + sync.Status);
+                    GUI.Label(new Rect(Screen.width - 330, 28, 320, 22), sync.Status);
+                    if (sync.AnyDesync) DrawDesyncBanner();
                     if (Time.realtimeSinceStartup < sync.NoticeUntil)
                         GUI.Label(new Rect(Screen.width / 2 - 250, 70, 500, 44), sync.Notice);
                 }
             }
             if (showWindow)
                 windowRect = GUILayout.Window(0x0B7C00, windowRect, DrawWindow, "BattleTech Co-op (Ctrl+Shift+C)");
+        }
+
+        private GUIStyle bannerStyle;
+
+        // A desync means the two games no longer show the same battle; small status text was easy
+        // to miss in the first human test, so this is a big banner that stays up.
+        private void DrawDesyncBanner()
+        {
+            if (bannerStyle == null)
+            {
+                bannerStyle = new GUIStyle(GUI.skin.box) { fontSize = 26, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter, wordWrap = true };
+                bannerStyle.normal.textColor = Color.white;
+                var tex = new Texture2D(1, 1);
+                tex.SetPixel(0, 0, new Color(0.75f, 0.05f, 0.05f, 0.9f));
+                tex.Apply();
+                bannerStyle.normal.background = tex;
+            }
+            GUI.Box(new Rect(Screen.width / 2 - 360, 120, 720, 76),
+                "CO-OP DESYNC: the two games no longer match.\nFinish or quit this battle and send both logs.", bannerStyle);
         }
 
         private void DrawWindow(int id)
