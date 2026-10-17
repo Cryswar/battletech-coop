@@ -92,15 +92,24 @@ namespace BattletechCoop.Sync
         static void Prefix() => CombatSync.Current?.OnActivation();
     }
 
-    // Guest: the AI never decides anything; its moves arrive from the host.
+    // Only one machine decides for an AI team (CombatSync.ThinksHere): normally the host. Its moves
+    // reach the other machine through the stream (host thinking) or as requests (guest thinking).
     [HarmonyPatch(typeof(AITeam), "think")]
     public static class AIThinkPatch
     {
-        static bool Prefix() => !CombatSync.GuestActive;
+        static bool Prefix(AITeam __instance)
+        {
+            var sync = CombatSync.Current;
+            if (sync == null) return true;
+            return sync.IsHost ? sync.ThinksHere(__instance) : sync.GuestMayThink(__instance);
+        }
 
         static void Postfix(AITeam __instance)
         {
-            if (CombatSync.HostActive) CombatSync.Current.OnAITeamMaybeComplete(__instance);
+            var sync = CombatSync.Current;
+            if (sync == null || !sync.ThinksHere(__instance)) return;
+            if (sync.IsHost) sync.OnAITeamMaybeComplete(__instance);
+            else sync.AfterGuestThink(__instance);
         }
     }
 

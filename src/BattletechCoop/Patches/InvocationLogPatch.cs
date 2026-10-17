@@ -20,10 +20,11 @@ namespace BattletechCoop.Patches
             if (invocation == null) return true;
 
             // A guest only executes invocations replayed from the host's stream (WasNetRouted).
-            // Anything it creates itself (HUD orders, auto stand-up) runs on the host instead.
+            // Anything it creates itself becomes a request to the host (shared control), which
+            // runs it and streams it back.
             if (CombatSync.GuestActive && !message.WasNetRouted)
             {
-                Log.Info($"SYNC guest: dropped local {invocation.GetType().Name}; the host's stream drives combat");
+                CombatSync.Current.RequestOrder(invocation);
                 return false;
             }
 

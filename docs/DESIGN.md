@@ -95,6 +95,31 @@ and everything flows through the stream. `-coop-autoskirmish` makes the host bui
 fixed skirmish once a guest has joined: first released multiplayer map by name, first
 `IsSkirmish` encounter, fixed mech and pilot IDs.
 
+#### M3 shared control (owner decision 2026-10-16)
+
+Every player can command every player-team unit. Per-lance ownership is an optional setting for
+later, implemented as a host-side filter on the same request path.
+
+- **Guest orders become requests.** An invocation the guest creates (HUD, or the guest's AI in
+  the shared test) is not run locally. It is serialized and sent to the host with the guest's
+  last applied stream seq. Only one request can be outstanding at a time; a second one is
+  dropped with a notice.
+- **The host serializes everything.** Requests are queued and handled when the host is idle,
+  under the same conditions the guest uses for replay. A request is accepted only if the guest
+  had seen the latest state (its seq equals the host's), the combat is running, and the active
+  turn actor is the player team. The host then gives it a fresh `InvocationID` (`G<player>.<n>`,
+  so it can never collide with the host's own IDs) and publishes it locally. From there it is an
+  ordinary host invocation: it executes, gets streamed, and the guest replays it. The guest gets
+  an accept or reject result. A reject (usually "the state changed first") shows a notice; the
+  player re-issues the order.
+- **Conflicts** (both players acting at once) resolve as first-come: whichever order runs on the
+  host first wins, and the other side's order is rejected as stale.
+- **AI completion in the shared test.** The test makes the Player 1 AI think on the guest on
+  even activations and on the host on odd ones. A guest-side AI never completes locally: when
+  its `think` sets `isComplete`, the guest resets it and sends a completion request, and the
+  host applies it and streams `AIComplete` as usual. Completion therefore only ever arrives
+  through the stream, which keeps the activation gating intact.
+
 ### Unit ownership (two lances)
 
 - Everyone stays on the Player1 team. A per-unit owner table (unit GUID → player id) is sent
@@ -233,7 +258,24 @@ TestInstall2 joins over localhost TCP; auto-skirmish on `mapArena_AlpineRiver_iG
   `SkirmishSettings_Beta.LaunchMap`); a contract with no mood stalls loading; and the briefing's
   "Begin mission" needs pressing (auto-pressed in autoplay).
 
-What this does not cover yet: human orders from the host's HUD (only AI-issued invocations so
+**2026-10-16, M3 shared-control tests** (`-Combat -Shared`: the Player 1 AI decides on the guest on
+even activations and on the host on odd ones):
+
+- Full mission: **PASS**. 165 items to mission over. **37 guest orders** were accepted and run by
+  the host (20 moves, 12 attacks, 3 melee, 2 reserves), plus 23 guest AI completions and 66 host
+  orders. 0 requests rejected, 0 desyncs.
+- Regression, host-only full mission after the change: **PASS** (174 items, 0 desyncs).
+- Release build 0.0.3, 60-item shared run: **PASS** (15 guest orders, 10 completions, 0 rejected),
+  fingerprint `CCC137FFC7EDA24B (25 files)`.
+- Found and fixed: `InvocationID`'s setter is private on the base class, so the host now writes
+  `<InvocationID>k__BackingField`. Until that fix every guest order was rejected cleanly, with a
+  notice on the guest, so the reject path is exercised too.
+
+Not covered by these tests: a human using the HUD on either machine, in particular how the HUD
+reacts when the other player's order moves a unit, and whether the guest's HUD waits correctly
+between sending an order and seeing it replayed. That needs the 0.0.3 human test.
+
+What M1 does not cover yet: human orders from the host's HUD (only AI-issued invocations so
 far, although the HUD's `ReserveActorInvocation` and `MechMovementInvocation` take the same
 path), guest orders (dropped until M3), Steam transport latency during combat, maps other than
 the first, and combat saves/loads.

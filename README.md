@@ -4,7 +4,8 @@ A mod that lets 2+ players play the BattleTech (2018) single-player campaign tog
 Steam. The host owns the campaign save. Each player commands their own lance in missions.
 Between missions, each player can refit their own mechs and pilots.
 
-Status: **pre-alpha, nothing playable.** See [docs/DESIGN.md](docs/DESIGN.md) for the
+Status: **pre-alpha.** Co-op skirmish with shared control works in automated tests. Campaign
+co-op is not done yet. See [docs/DESIGN.md](docs/DESIGN.md) for the
 architecture and milestones.
 
 Target game: Steam build 20387569, BattleTech 1.9.1 (686R). All players need to own the
@@ -52,7 +53,9 @@ zip into their game folder, so their mod fingerprints match.
   host's invocation stream. It passes when the guest has replayed `-TargetSeq` items (or the
   mission ended) with no desync. Use `-TargetSeq 100000` for a whole match.
   `-InjectDesyncAt <seq>` corrupts guest state on purpose; then PASS means the desync detector
-  caught it.
+  caught it. `-Shared` makes the Player 1 AI alternate between guest and host each activation,
+  so half the orders are guest requests (shared control). It also requires accepted requests and
+  none rejected.
 - In game, **Ctrl+Shift+C** opens the co-op window: host or join over TCP, host via Steam,
   invite Steam friends, send test messages (including a 2 MB one), leave.
 

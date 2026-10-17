@@ -12,6 +12,9 @@ param(
     [string]$GuestDir = 'D:\Modding\Battletech\TestInstall2',
     [int]$Port = 47637,
     [switch]$Combat,
+    # Shared control test: the Player 1 AI alternates between guest and host each activation, so
+    # half of Player 1's orders are guest requests. Also requires accepted and zero rejected requests.
+    [switch]$Shared,
     [int]$TargetSeq = 60,
     [double]$TimeScale = 3,
     [string]$Map = '',
@@ -50,7 +53,7 @@ $guestLog = Get-CoopLog $GuestDir
 $hostArgs = @('-coop-host-tcp', "$Port", '-coop-name', 'HostBot')
 $guestArgs = @('-coop-join-tcp', "127.0.0.1:$Port", '-coop-name', 'GuestBot')
 if ($Combat) {
-    $hostArgs += @('-coop-autoplay', '-coop-autoskirmish')
+    $hostArgs += @($(if ($Shared) { '-coop-autoplay-shared' } else { '-coop-autoplay' }), '-coop-autoskirmish')
     if ($Map) { $hostArgs += $Map }
     $ts = $TimeScale.ToString([System.Globalization.CultureInfo]::InvariantCulture)
     $hostArgs += @('-coop-timescale', $ts)
@@ -113,6 +116,15 @@ try {
         $late = @((Read-Log $hostLog) + (Read-Log $guestLog) | Where-Object { $_ -cmatch 'DESYNC|\[ERROR\]' })
         if ($InjectDesyncAt -gt 0) { $late = @($late | Where-Object { $_ -notmatch 'DESYNC' }) }
         if ($passed -and $late.Count -gt 0) { $passed = $false; $reason = "error or desync: $($late[0])" }
+        if ($Shared) {
+            $h = Read-Log $hostLog
+            $acceptedOrders = @($h | Where-Object { $_ -cmatch 'accepted guest \d+ request \d+ (?!AIComplete)' }).Count
+            $acceptedComplete = @($h | Where-Object { $_ -cmatch 'accepted guest \d+ request \d+ AIComplete' }).Count
+            $rejected = @($h | Where-Object { $_ -cmatch 'rejected guest' })
+            Write-Host "guest requests accepted: $acceptedOrders orders, $acceptedComplete AI completions; rejected: $($rejected.Count)"
+            if ($passed -and $acceptedOrders -lt 5) { $passed = $false; $reason += "; too few guest orders ($acceptedOrders)" }
+            if ($passed -and $rejected.Count -gt 0) { $passed = $false; $reason += "; rejected: $($rejected[0])" }
+        }
     }
 }
 finally {

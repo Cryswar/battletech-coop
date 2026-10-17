@@ -33,7 +33,8 @@ $notes = @"
 BattleTech Co-op $version (with ModTek $ModTekVersion)
 =====================================================
 
-PRE-ALPHA. This build only tests the connection between players. There is no co-op gameplay yet.
+PRE-ALPHA. Co-op works in SKIRMISH only, with shared control: every player can command every
+mech in the player lance. Campaign contracts are not supported yet (they start single-player).
 
 Install (every player, same zip)
 --------------------------------
@@ -60,6 +61,22 @@ Connection test
   message at the bottom.
 - Check that the "Mods:" line at the bottom of the window is identical for everyone.
 - Afterwards, send the host the file Mods\BattletechCoop\BattletechCoop.log from each PC.
+
+Co-op skirmish
+--------------
+1. Connect as above. The friend stays in the main menu.
+2. Host: open Skirmish, pick your lance and the opposing lance and a map, and launch as usual.
+   The friend's game loads the same battle by itself.
+3. Both: click "Begin mission".
+4. Either player can select and command any mech in the player lance. Wait for an order to
+   finish playing out before giving the next one. If both of you act at the same moment, the
+   order that reaches the host first wins, and the other player sees "Order not accepted" and
+   can give it again.
+5. The top-right corner shows sync status. If it ever says "DESYNC!", please finish or quit the
+   battle and send both log files.
+
+Known limits: no saving or loading during co-op combat; if someone disconnects mid-battle, the
+battle cannot be resumed together.
 
 Uninstall
 ---------

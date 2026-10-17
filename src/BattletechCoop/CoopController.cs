@@ -21,6 +21,8 @@ namespace BattletechCoop
     //   -coop-name <name>           player name (default: Steam persona name)
     //   -coop-test-message          once connected, send a test game message to the other side
     //   -coop-autoplay              (host) co-op combats make Player 1 AI-controlled too (bot test)
+    //   -coop-autoplay-shared       (host) same, but the Player 1 AI alternates between the guest and
+    //                               the host each activation (tests guest order requests)
     //   -coop-autoskirmish [map]    (host) once a guest has joined, launch a fixed skirmish
     //   -coop-timescale <x>         Unity time scale during combat (speeds up bot tests)
     //   -coop-inject-desync <seq>   (guest) corrupt state before that stream item, to test desync detection
@@ -32,7 +34,7 @@ namespace BattletechCoop
 
         public static CoopController Instance { get; private set; }
         public CoopSession Session { get; private set; }
-        public bool Autoplay { get; private set; }
+        public Sync.AutoplayMode Autoplay { get; private set; }
 
         private bool autoSkirmish;
         private string autoSkirmishMap;
@@ -99,7 +101,8 @@ namespace BattletechCoop
                 {
                     case "-coop-name": if (hasValue) name = args[i + 1]; break;
                     case "-coop-test-message": sendTestOnConnect = true; break;
-                    case "-coop-autoplay": Autoplay = true; break;
+                    case "-coop-autoplay": Autoplay = Sync.AutoplayMode.Host; break;
+                    case "-coop-autoplay-shared": Autoplay = Sync.AutoplayMode.Shared; break;
                     case "-coop-autoskirmish":
                         autoSkirmish = true;
                         if (hasValue && !args[i + 1].StartsWith("-")) autoSkirmishMap = args[i + 1];
@@ -312,7 +315,11 @@ namespace BattletechCoop
                 GUI.Label(new Rect(Screen.width - 330, 8, 320, 22), label);
                 var sync = Sync.CombatSync.Current;
                 if (sync != null)
+                {
                     GUI.Label(new Rect(Screen.width - 330, 28, 320, 22), (sync.Desyncs > 0 ? "DESYNC! " : "") + sync.Status);
+                    if (Time.realtimeSinceStartup < sync.NoticeUntil)
+                        GUI.Label(new Rect(Screen.width / 2 - 250, 70, 500, 44), sync.Notice);
+                }
             }
             if (showWindow)
                 windowRect = GUILayout.Window(0x0B7C00, windowRect, DrawWindow, "BattleTech Co-op (Ctrl+Shift+C)");
