@@ -115,6 +115,16 @@ try {
         Start-Sleep -Seconds 2
         $late = @((Read-Log $hostLog) + (Read-Log $guestLog) | Where-Object { $_ -cmatch 'DESYNC|\[ERROR\]' })
         if ($InjectDesyncAt -gt 0) { $late = @($late | Where-Object { $_ -notmatch 'DESYNC' }) }
+        # The game's own log: a crash while setting up the contract (e.g. spawning a lance) leaves
+        # that side stuck before "Begin mission" without any error in our log.
+        foreach ($pair in @(@('host', $HostDir), @('guest', $GuestDir))) {
+            $gameLog = Join-Path $pair[1] 'Mods\.modtek\battletech_log.txt'
+            if (-not (Test-Path $gameLog)) { continue }
+            $setup = @(Select-String -Path $gameLog -Pattern 'Delegate (InitializeContract|OnInitializeContract)' | ForEach-Object { $_.Line })
+            $critical = @(Select-String -Path $gameLog -Pattern 'CRITICAL ERROR' -CaseSensitive).Count
+            if ($critical -gt 0) { Write-Host "$($pair[0]) game log: $critical CRITICAL ERROR entries" }
+            if ($setup.Count -gt 0) { $passed = $false; $reason += "; $($pair[0]) crashed setting up the contract: $($setup[0])" }
+        }
         if ($passed -and $late.Count -gt 0) { $passed = $false; $reason = "error or desync: $($late[0])" }
         if ($Shared) {
             $h = Read-Log $hostLog

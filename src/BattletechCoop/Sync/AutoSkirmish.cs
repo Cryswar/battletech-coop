@@ -23,12 +23,25 @@ namespace BattletechCoop.Sync
             "pilot_d10_skirmisher", "pilot_d9_skirmisher", "pilot_d8_skirmisher", "pilot_d7_skirmisher",
         };
 
+        // HasInstance first: touching UnityGameInstance before the scene creates it logs Unity errors.
         public static bool MainMenuShowing =>
-            UnityGameInstance.BattleTechGame != null && UnityGameInstance.BattleTechGame.Combat == null
+            SceneSingletonBehavior<UnityGameInstance>.HasInstance
+            && UnityGameInstance.BattleTechGame != null && UnityGameInstance.BattleTechGame.Combat == null
             && LazySingletonBehavior<UIManager>.Instance.GetFirstModule<MainMenu>() != null;
 
         // mapName: a Map_MDD.MapName to prefer; otherwise the first released multiplayer map by name.
+        // The lance is built from loaded MechDef/PilotDef objects, like the skirmish screen does,
+        // because that is what real players send (string IDs alone hid a guest spawn crash).
         public static void Launch(string mapName)
+        {
+            var dataManager = UnityGameInstance.BattleTechGame.DataManager;
+            var request = dataManager.CreateLoadRequest(_ => Build(mapName), false);
+            foreach (var id in Mechs.Distinct()) request.AddBlindLoadRequest(BattleTechResourceType.MechDef, id, false);
+            foreach (var id in Pilots.Distinct()) request.AddBlindLoadRequest(BattleTechResourceType.PilotDef, id, false);
+            request.ProcessRequests();
+        }
+
+        private static void Build(string mapName)
         {
             var maps = MetadataDatabase.Instance.GetReleasedMapsAndEncounters(false, true, true)
                 .Where(m => m.Encounters.Any(e => e.ContractTypeValue.IsSkirmish))
@@ -45,8 +58,11 @@ namespace BattletechCoop.Sync
             var lances = new LanceConfiguration();
             for (var i = 0; i < Mechs.Length; i++)
             {
-                lances.AddUnit(CombatSync.Player1TeamGuid, Mechs[i], Pilots[i], UnitType.Mech);
-                lances.AddUnit(Player2TeamGuid, Mechs[i], Pilots[i], UnitType.Mech);
+                var mech = game.DataManager.MechDefs.Get(Mechs[i]);
+                var pilot = game.DataManager.PilotDefs.Get(Pilots[i]);
+                if (mech == null || pilot == null) throw new InvalidOperationException($"could not load {Mechs[i]} / {Pilots[i]}");
+                lances.AddUnit(CombatSync.Player1TeamGuid, mech, pilot);
+                lances.AddUnit(Player2TeamGuid, mech, pilot);
             }
             contract.SetLanceConfiguration(lances);
             // Without a mood the map load stalls after the biome skin. Same choice as the skirmish

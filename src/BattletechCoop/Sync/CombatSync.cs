@@ -167,7 +167,7 @@ namespace BattletechCoop.Sync
             Current = new CombatSync(session, false, combatId, mode);
             Log.Info($"SYNC guest: launching host's combat {combatId} ({data.Length} bytes), autoplay={mode}");
 
-            ContractLauncher.LaunchFromMenu(contract);
+            LanceLoader.PrepareGuestLance(contract, () => ContractLauncher.LaunchFromMenu(contract));
         }
 
         // Guest, every frame while connected and not in a co-op combat: launch a deferred combat,

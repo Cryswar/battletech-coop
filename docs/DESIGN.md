@@ -271,6 +271,27 @@ even activations and on the host on odd ones):
   `<InvocationID>k__BackingField`. Until that fix every guest order was rejected cleanly, with a
   notice on the guest, so the reject path is exercised too.
 
+**2026-10-16/17, first human test (0.0.3, two PCs over Steam): guest stuck before "Begin
+mission".** The host launched from the real skirmish screen. Its lance units are built from
+`MechDef`/`PilotDef` objects, giving a 326,768-byte contract against 1,428 bytes in the tests,
+which used string IDs. The guest's game log showed the spawn crashing in
+`MechDef.GetChassisLocationDef`. Deserialized defs lack their chassis, component and ability links.
+
+- Reproduced locally by making auto-skirmish load real defs through the DataManager, like the
+  screen does: same crash, test FAIL.
+- Fix (`Sync/LanceLoader.cs`, guest only, before launching): rebuild every unit from its
+  `UnitJson`/`PilotJson` (`SpawnableUnit.FromJSON`), set the DataManager, `Refresh`, gather the
+  missing dependencies into an `InjectedDependencyLoadRequest`, and after loading also refresh
+  the chassis, whose movement caps were missing and crashed `Mech.InitStats`. This mirrors
+  `Contract.RequestDependencies`. Forcing the game's own multiplayer branch of
+  `BeginRequestResources` stalled the load instead.
+- After the fix, with object-based lances: full shared mission **PASS** (178 items, 35 guest
+  orders, 22 completions, 0 rejected, 0 desyncs), and the 0.0.4 release build 60-item shared
+  run **PASS**.
+- The test script now also fails on a contract-setup crash in either side's game log. Both
+  sides log 4 identical harmless `Team.OnVisibilityIncreased` errors: an audio and VFX cue whose
+  spotting unit is not in the AI-substituted player team, which happens in autoplay only.
+
 Not covered by these tests: a human using the HUD on either machine, in particular how the HUD
 reacts when the other player's order moves a unit, and whether the guest's HUD waits correctly
 between sending an order and seeing it replayed. That needs the 0.0.3 human test.

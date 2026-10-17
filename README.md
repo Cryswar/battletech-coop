@@ -43,6 +43,8 @@ zip into their game folder, so their mod fingerprints match.
 
 - Network core (no game needed): `dotnet run --project tests/NetTests`. It runs host and guests
   over real localhost TCP sockets.
+- Keep the screen awake and unlocked while game tests run: with the display off, Unity hangs at
+  "Input initialized" before any mod code runs (seen 2026-10-17).
 - Two game copies on one PC: `powershell -ExecutionPolicy Bypass -File tools\two-copy-test.ps1`.
   It starts a host in `TestInstall` and a guest in `TestInstall2` over localhost TCP, waits for
   each side to receive the other's test message, prints both logs and closes the games.
