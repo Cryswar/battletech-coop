@@ -1,13 +1,16 @@
 using System.Linq;
 using BattleTech;
+using BattletechCoop.Net;
 using UnityEngine;
 
 namespace BattletechCoop.Sync
 {
-    // -coop-test-requests (guest): a few seconds after the host's ship is showing, make the changes a
-    // player would (rename a 'Mech, refit it, train and rename a pilot) through the same functions
-    // the screens call, so the requests reach the host. tools/two-copy-test.ps1 -ShipRequests then
-    // compares what each side logs.
+    // -coop-test-requests (host and guest): make the changes a player would (rename a 'Mech, refit
+    // it, train and rename a pilot) through the same functions the screens call. The guest does it a
+    // few seconds after the host's ship is showing, so its requests reach the host; the host does it
+    // a few seconds after sending its ship, so its updates reach the guest (queued there while the
+    // ship is still loading). They pick different 'Mechs and pilots (guest: first, host: last).
+    // tools/two-copy-test.ps1 -ShipRequests then compares what each side logs.
     public static class ShipRequestTest
     {
         public static bool Enabled;
@@ -15,17 +18,27 @@ namespace BattletechCoop.Sync
 
         public static void Update()
         {
-            if (!Enabled || done || ShipView.ShowingSince < 0 || Time.realtimeSinceStartup < ShipView.ShowingSince + 5f) return;
+            if (!Enabled || done) return;
+            var session = CoopController.Instance?.Session;
+            if (session == null) return;
+            var host = session.Role == SessionRole.Host;
+            var since = host ? ShipView.SentAt : ShipView.ShowingSince;
+            if (since < 0 || Time.realtimeSinceStartup < since + (host ? 3f : 5f)) return;
             done = true;
             var sim = UnityGameInstance.BattleTechGame?.Simulation;
             if (sim == null) { Log.Error("SHIP test: no campaign showing"); return; }
+            Run(sim, host);
+        }
 
-            var mech = sim.ActiveMechs.Values.FirstOrDefault(m => sim.GetWorkOrderEntryForMech(m) == null
-                && m.Inventory.Any(c => c.ComponentDefType == ComponentType.Weapon && !c.IsFixed));
-            if (mech == null) { Log.Error("SHIP test: no 'Mech to refit"); return; }
+        private static void Run(SimGameState sim, bool host)
+        {
+            var mechs = sim.ActiveMechs.Values.Where(m => sim.GetWorkOrderEntryForMech(m) == null
+                && m.Inventory.Any(c => c.ComponentDefType == ComponentType.Weapon && !c.IsFixed)).ToList();
+            if (mechs.Count < 2) { Log.Error("SHIP test: need two 'Mechs to refit"); return; }
+            var mech = host ? mechs.Last() : mechs.First();
 
-            var newName = mech.Name + " CO";
-            ShipRequests.GuestRename(mech, newName);
+            var newName = mech.Name + (host ? " HO" : " CO");
+            ShipRequests.CaptureRename(mech, newName);
             mech.RenameMech(newName, null, null);
 
             // As MechLabPanel: a base order with one armor change and one weapon removed.
@@ -44,23 +57,27 @@ namespace BattletechCoop.Sync
             sim.UpdateMechLabWorkQueue(false);
 
             // A pilot one Gunnery level up (if they can afford it), then renamed.
-            var pilot = sim.PilotRoster.FirstOrDefault(p => p.Gunnery < 10 && p.UnspentXP >= sim.GetLevelCost(p.Gunnery + 1))
-                        ?? sim.PilotRoster.First();
-            if (pilot.Gunnery < 10 && pilot.UnspentXP >= sim.GetLevelCost(pilot.Gunnery + 1))
+            bool CanTrain(Pilot p) => p.Gunnery < 10 && p.UnspentXP >= sim.GetLevelCost(p.Gunnery + 1);
+            var trainable = sim.PilotRoster.Where(CanTrain).ToList();
+            var pilot = host
+                ? (trainable.Count > 1 ? trainable.Last() : sim.PilotRoster.Last())
+                : (trainable.FirstOrDefault() ?? sim.PilotRoster.First());
+            if (CanTrain(pilot))
             {
+                var cost = sim.GetLevelCost(pilot.Gunnery + 1);
                 var trained = ShipRequests.Train(sim, pilot, new[] { pilot.Gunnery + 1, pilot.Piloting, pilot.Guts, pilot.Tactics }, out var error);
                 if (trained == null) { Log.Error("SHIP test: could not train: " + error); return; }
-                trained.SpendExperience(0, "Advancement", (uint)sim.GetLevelCost(pilot.Gunnery + 1));
-                ShipRequests.GuestPilotSkills(pilot, trained);
+                trained.SpendExperience(0, "Advancement", (uint)cost);
+                ShipRequests.CapturePilotSkills(pilot, trained);
                 sim.UpgradePilot(trained);
                 pilot = sim.PilotRoster.First(p => p.GUID == trained.GUID);
             }
-            else Log.Info("SHIP test: no pilot can afford training; only renaming");
+            else Log.Info("SHIP test: this pilot cannot afford training; only renaming");
             var d = pilot.pilotDef.Description;
-            d.SetCallsign(d.Callsign + "CO");
+            d.SetCallsign(d.Callsign + (host ? "HO" : "CO"));
             d.SetName(d.Callsign);
-            ShipRequests.GuestPilotNames(pilot);
-            Log.Info("SHIP test: guest pilot now " + ShipRequests.PilotSummary(pilot));
+            ShipRequests.CapturePilotNames(pilot);
+            Log.Info($"SHIP test: {(host ? "host" : "guest")} pilot now " + ShipRequests.PilotSummary(pilot));
         }
     }
 }

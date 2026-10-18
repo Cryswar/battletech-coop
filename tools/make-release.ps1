@@ -88,8 +88,8 @@ Co-op Campaign / Career missions (new, first test)
 4. Play as in skirmish. The friend's game never saves while connected (it is running your
    campaign, which must not overwrite their own saves). Your game saves as normal.
 
-Shared ship (new in 0.0.9, first test)
---------------------------------------
+Shared ship (0.0.9; two-way updates new in 0.0.10)
+---------------------------------------------------
 1. Host: load your campaign or career and connect; the friend joins from the main menu.
    A few seconds later the friend's game loads your ship (the top of the friend's screen says
    "Viewing <your company>").
@@ -97,10 +97,14 @@ Shared ship (new in 0.0.9, first test)
    Barracks, as usual. Each change is sent to the host. A notice at the top of both screens says
    whether the host's game applied or refused it (for example: not enough C-Bills, or that mech
    already has a refit in progress on the host).
-3. Anything else the friend does on the ship (buying, selling, hiring, travelling, time
-   passing) is NOT kept: the friend's ship is a copy. Use "Refresh the host's ship" in the co-op
-   window (Ctrl+Shift+C) to see the host's current state; it reloads in a few seconds.
-4. When the host launches a mission, the friend's game follows as before.
+3. The host's own refits, repairs, renames and pilot training show up on the friend's screen
+   within a moment, and an open Mech Bay or Barracks redraws by itself on both sides (it waits
+   while the MechLab is open or a pilot has unconfirmed training).
+4. Anything else the friend does on the ship (buying, selling, hiring, travelling, time
+   passing) is NOT kept: the friend's ship is a copy. For the host's other changes, use
+   "Refresh the host's ship" in the co-op window (Ctrl+Shift+C); a full reload takes 15-20
+   seconds, and a notice at the top says when it is done.
+5. When the host launches a mission, the friend's game follows as before.
 
 Known limits: no saving or loading during co-op combat; if someone disconnects mid-battle, the
 battle cannot be resumed together.

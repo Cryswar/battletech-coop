@@ -74,7 +74,7 @@ if ($Combat) {
     if ($InjectDesyncAt -gt 0) { $guestArgs += @('-coop-inject-desync', "$InjectDesyncAt") }
 } elseif ($ShipView -or $ShipRequests) {
     $hostArgs += '-coop-test-shipview'
-    if ($ShipRequests) { $guestArgs += '-coop-test-requests' }
+    if ($ShipRequests) { $guestArgs += '-coop-test-requests'; $hostArgs += '-coop-test-requests' }
 } else {
     $hostArgs += '-coop-test-message'
     $guestArgs += '-coop-test-message'
@@ -93,7 +93,8 @@ try {
     if ($ShipRequests) {
         $done = Wait-ForLog $guestLog 'SHIP test: guest pilot now' $guestProc $deadline
         $end = (Get-Date).AddSeconds(20)
-        while ((Get-Date) -lt $end -and @(Read-Log $guestLog | Where-Object { $_ -match 'SHIP guest: host (applied|refused)' }).Count -lt 4) { Start-Sleep -Milliseconds 500 }
+        while ((Get-Date) -lt $end -and (@(Read-Log $guestLog | Where-Object { $_ -match 'SHIP guest: host (applied|refused)' }).Count -lt 4 -or
+                @(Read-Log $guestLog | Where-Object { $_ -match "SHIP guest: (applied|could not apply) the host's change" }).Count -lt 4)) { Start-Sleep -Milliseconds 500 }
         $h = Read-Log $hostLog; $g = Read-Log $guestLog
         $replies = @($g | Where-Object { $_ -match 'SHIP guest: host (applied|refused)' })
         $refused = @($replies | Where-Object { $_ -match 'refused' })
@@ -106,8 +107,22 @@ try {
         $hp = @($h | Where-Object { $_ -match 'SHIP host: pilot now (.*)$' }) | Select-Object -Last 1
         $gps = if ($gp -match 'guest pilot now (.*)$') { $Matches[1] } else { '' }
         $hps = if ($hp -match 'host: pilot now (.*)$') { $Matches[1] } else { '' }
-        $passed = $done -and $replies.Count -ge 3 -and $refused.Count -eq 0 -and $errors.Count -eq 0 -and $a -and ($a -eq $b) -and $gps -and ($gps -eq $hps)
-        $reason = "replies $($replies.Count) (refused $($refused.Count)), errors $($errors.Count); refit guest [$a] host [$b]; pilot guest [$gps] host [$hps]"
+        # Host -> guest: the host's own changes, applied on the guest as updates.
+        $updates = @($g | Where-Object { $_ -match "SHIP guest: (applied|could not apply) the host's change" })
+        $failedUpdates = @($updates | Where-Object { $_ -match 'could not apply' })
+        $toldRefit = @($h | Where-Object { $_ -match "told the guests: refit '.*' \((.*)\)$" }) | Select-Object -Last 1
+        $gotRefit = @($g | Where-Object { $_ -match "SHIP guest: queued refit '.*' \((.*)\), funds" }) | Select-Object -Last 1
+        $c = if ($toldRefit -match "refit '(.*)' \((.*)\)$") { "$($Matches[1]) $($Matches[2])" } else { '' }
+        $e = if ($gotRefit -match "queued refit '(.*)' \((.*)\), funds") { "$($Matches[1]) $($Matches[2])" } else { '' }
+        $hp2 = @($h | Where-Object { $_ -match 'SHIP test: host pilot now (.*)$' }) | Select-Object -Last 1
+        $gp2 = @($g | Where-Object { $_ -match 'SHIP guest: pilot now (.*)$' }) | Select-Object -Last 1
+        $hps2 = if ($hp2 -match 'host pilot now (.*)$') { $Matches[1] } else { '' }
+        $gps2 = if ($gp2 -match 'guest: pilot now (.*)$') { $Matches[1] } else { '' }
+        $passed = $done -and $replies.Count -ge 3 -and $refused.Count -eq 0 -and $errors.Count -eq 0 -and $a -and ($a -eq $b) -and $gps -and ($gps -eq $hps) -and
+            $updates.Count -ge 3 -and $failedUpdates.Count -eq 0 -and $c -and ($c -eq $e) -and $hps2 -and ($hps2 -eq $gps2)
+        $reason = "guest->host: replies $($replies.Count) (refused $($refused.Count)); refit guest [$a] host [$b]; pilot guest [$gps] host [$hps]. " +
+            "host->guest: updates $($updates.Count) (failed $($failedUpdates.Count)); refit host [$c] guest [$e]; pilot host [$hps2] guest [$gps2]. errors $($errors.Count)"
+        if ($failedUpdates.Count -gt 0) { $reason += "; first failed update: $($failedUpdates[0])" }
         if ($refused.Count -gt 0) { $reason += "; first refusal: $($refused[0])" }
         if ($errors.Count -gt 0) { $reason += "; first error: $($errors[0])" }
     }

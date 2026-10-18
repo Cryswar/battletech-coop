@@ -250,11 +250,28 @@ menu, Ironman campaigns, and the mission-end and AAR flow back to the ship on th
     Refused when the host's pilot lacks the XP or already has a higher level.
   - *Pilot names:* after `SGBarracksMWCustomizationPopup.Save`: first/last name, callsign,
     gender, voice. Portraits are not sent yet.
+- **Updates (0.0.10).** The host's own changes of the same kinds (refits and repairs, 'Mech
+  and pilot names, pilot training) are captured by the same patches and sent to the guests as
+  updates; each guest applies them to its copy the same way, so they need no full reload. An
+  update that arrives while a ship save is still loading waits until that ship is showing; a
+  newly received ship save drops waiting updates, since it was built after them. A guest's
+  request that the host applies is forwarded to any other guests as an update. While a change
+  from the other side is applied, the capture patches stay quiet, so nothing echoes back.
+- **Open screens are redrawn (0.0.10)** after a change from the other side: the Mech Bay with
+  `MechBayPanel.RefreshData` and the same bay slot selected again, the Barracks with
+  `SGBarracksWidget.Reset` on the pilot being shown. Only screens that are `Visible`; it waits
+  while the MechLab is open or the shown pilot has unconfirmed training.
+- **Refresh (0.0.10):** the button is disabled while a ship is loading; notices say "Asking the
+  host...", "Loading the host's ship...", "Ship updated from the host", or after 30 s that the
+  host sends its ship only once it is on the ship screen. The host answers a refresh at once
+  instead of waiting out the 10 s throttle. A full reload still takes 15-20 s, nearly all of it
+  the game's own loading.
 - Control is shared, as in combat: either player may refit any 'Mech or train any pilot. Owners
   (a company tag per 'Mech, e.g. `coop.owner=<steamid>`) can come later as an option.
 - Not covered yet: buying and selling, hiring, cancelling a work order, readying or storing a
-  'Mech, pilot portraits, and refits of a 'Mech whose host refit is still in progress. The
-  guest's copy goes stale while the host plays; "Refresh the host's ship" reloads it.
+  'Mech, pilot portraits, refits of a 'Mech whose host refit is still in progress, and time
+  passing. For those the guest's copy goes stale until the next full ship (mission end, joining,
+  or "Refresh the host's ship").
 - Story events and dialogue: shown on all machines, and the host picks. A vote option can
   come later.
 
@@ -464,6 +481,19 @@ the first, and combat saves/loads.
   guest's screens were still attaching, which the UX-attached signal also fixed.
 - Not yet tested by hand: the real MechLab and barracks screens on the guest, refits finishing
   on the host as days pass, and parts from storage.
+- **2026-10-17, first human ship test (0.0.9, two PCs over Steam): works.** The guest followed
+  the host into the campaign; pilot rename, pilot training (2500 XP), 'Mech rename and a
+  Vindicator refit (9000 C-Bills) were all applied on the host, none refused. Reported: the
+  host's open tab showed a change only after switching tabs; the guest did not see the host's
+  own changes until a refresh; refresh took 10-30 s with no message (a second click while
+  loading started a second load). All three addressed in 0.0.10 (updates, redraw, refresh).
+- 0.0.10 `-ShipRequests` now runs both directions: the host (`-coop-test-requests`) also renames,
+  refits, trains and renames its own 'Mech and pilot 3 s after sending its ship, so its updates
+  arrive while the guest is still loading and must wait. **PASS**: 4 requests applied on the host
+  and 4 updates on the guest, refits (2 tasks / 500 C-Bills) and pilots identical both ways, no
+  errors. The first run caught the redraw touching a Mech Bay panel that was in the scene but
+  never opened; it now redraws only `Visible` screens. The redraw itself with a screen open is
+  only tested by hand.
 
 ## Open questions
 

@@ -26,6 +26,7 @@ namespace BattletechCoop.Sync
         private static bool dirty;
         private static bool wasInShip;
         private static DateTime lastSent = DateTime.MinValue;
+        private static bool urgent; // a guest asked: skip the throttle
 
         // Guest
         public static bool GuestViewing { get; private set; }
@@ -35,14 +36,26 @@ namespace BattletechCoop.Sync
         private static bool awaitingLoaded;
         public static float ShowingSince { get; private set; } = -1;
         public static SimGameState UXReady; // set by SimGameAttachUXPatch
+        public static bool Refreshing { get; private set; }
+        public static float SentAt { get; private set; } = -1; // host: last ship sent
+        private static float refreshAskedAt;
+        private static bool refreshReceived;
+
+        // The host's ship is showing and no newer one is on its way.
+        public static bool Ready => GuestViewing && ShowingSince >= 0 && pendingLoad == null && !awaitingLoaded;
+        public static bool Busy => Refreshing || pendingLoad != null || awaitingLoaded;
 
         public static void Reset()
         {
             dirty = false;
             wasInShip = false;
             pendingLoad = null;
+            awaitingLoaded = false;
             GuestViewing = false;
             ShowingSince = -1;
+            Refreshing = false;
+            urgent = false;
+            ShipRequests.Reset();
         }
 
         // Something the guest should see changed (or the guest asked).
@@ -70,10 +83,11 @@ namespace BattletechCoop.Sync
             wasInShip = inShip;
             if (!dirty || !inShip || CombatSync.Current != null) return;
             if (session.Players.Count(p => p.Index != 0) == 0) return;
-            if (DateTime.UtcNow - lastSent < MinInterval) return;
+            if (!urgent && DateTime.UtcNow - lastSent < MinInterval) return;
             if (!game.Simulation.CanSave(SaveReason.MANUAL, false)) return;
 
             dirty = false;
+            urgent = false;
             lastSent = DateTime.UtcNow;
             try
             {
@@ -81,6 +95,7 @@ namespace BattletechCoop.Sync
                 var bytes = SaveTransfer.Serialize(new GameInstanceSave(game, SaveReason.MANUAL));
                 var company = game.Simulation.CompanyName ?? "";
                 session.SendGame(ChannelShipSave, Build(w => { w.Write(company); w.Write(bytes.Length); w.Write(bytes); }));
+                SentAt = UnityEngine.Time.realtimeSinceStartup;
                 Log.Info($"SHIP host: sent {Summary(game.Simulation)} ({bytes.Length} bytes, {started.ElapsedMilliseconds} ms)");
             }
             catch (Exception e)
@@ -91,6 +106,12 @@ namespace BattletechCoop.Sync
 
         private static void UpdateGuest()
         {
+            // The host sends only while it is on the ship and able to save.
+            if (Refreshing && !refreshReceived && UnityEngine.Time.realtimeSinceStartup > refreshAskedAt + 30f)
+            {
+                Refreshing = false;
+                ShipRequests.ShowNotice("No ship from the host yet: it is sent once the host is on the ship screen.", 8f);
+            }
             if (awaitingLoaded)
             {
                 var current = SceneSingletonBehavior<UnityGameInstance>.HasInstance ? UnityGameInstance.BattleTechGame : null;
@@ -104,6 +125,8 @@ namespace BattletechCoop.Sync
                     awaitingLoaded = false;
                     ShowingSince = UnityEngine.Time.realtimeSinceStartup;
                     Log.Info("SHIP guest: now showing " + Summary(current.Simulation));
+                    if (Refreshing) ShipRequests.ShowNotice("Ship updated from the host", 5f);
+                    Refreshing = false;
                 }
             }
             if (pendingLoad == null) return;
@@ -141,17 +164,26 @@ namespace BattletechCoop.Sync
                     GuestCompany = r.ReadString();
                     pendingLoad = r.ReadBytes(r.ReadInt32());
                     Log.Info($"SHIP guest: received the host's ship '{GuestCompany}' ({pendingLoad.Length} bytes)");
+                    ShipRequests.ShipSaveReceived();
+                    refreshReceived = true;
+                    ShipRequests.ShowNotice("Loading the host's ship...", 60f);
                 }
                 else if (channel == ChannelShipRefresh && session.Role == SessionRole.Host)
                 {
                     MarkDirty("guest asked for a refresh");
+                    urgent = true;
                 }
             }
         }
 
         public static void RequestRefresh(CoopSession session)
         {
+            if (Busy) { ShipRequests.ShowNotice("Already loading the host's ship...", 3f); return; }
             session.SendGame(ChannelShipRefresh, new byte[0]);
+            Refreshing = true;
+            refreshReceived = false;
+            refreshAskedAt = UnityEngine.Time.realtimeSinceStartup;
+            ShipRequests.ShowNotice("Asking the host for its ship...", 60f);
             Log.Info("SHIP guest: asked the host for a refresh");
         }
 

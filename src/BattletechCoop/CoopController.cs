@@ -253,7 +253,8 @@ namespace BattletechCoop
                 Sync.ShipView.HandleGameMessage(Session, channel, payload);
                 return;
             }
-            if (channel == Sync.ShipRequests.ChannelRequest || channel == Sync.ShipRequests.ChannelReply)
+            if (channel == Sync.ShipRequests.ChannelRequest || channel == Sync.ShipRequests.ChannelReply
+                || channel == Sync.ShipRequests.ChannelUpdate)
             {
                 Sync.ShipRequests.HandleGameMessage(Session, sender, channel, payload);
                 return;
@@ -330,6 +331,7 @@ namespace BattletechCoop
             {
                 Sync.CombatSync.Current?.Update();
                 Sync.ShipView.Update(Session);
+                Sync.ShipRequests.Update();
                 Sync.CombatSync.UpdateIdleGuest(Session);
                 UpdateTestModes();
             }
@@ -493,8 +495,13 @@ namespace BattletechCoop
                     if (Session.Role == SessionRole.Host && GUILayout.Button("Invite Steam friends")) steam.InviteFriends();
                 }
                 if (Session.State != SessionState.Active) GUILayout.Label("Connecting to host...");
-                if (Session.Role == SessionRole.Guest && Session.State == SessionState.Active && GUILayout.Button("Refresh the host's ship"))
-                    Sync.ShipView.RequestRefresh(Session);
+                if (Session.Role == SessionRole.Guest && Session.State == SessionState.Active)
+                {
+                    GUI.enabled = !Sync.ShipView.Busy;
+                    if (GUILayout.Button(Sync.ShipView.Busy ? "Loading the host's ship..." : "Refresh the host's ship"))
+                        Sync.ShipView.RequestRefresh(Session);
+                    GUI.enabled = true;
+                }
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button("Send test message")) SendTestMessage();
                 if (GUILayout.Button("Send 2 MB test")) SendTestMessage(2 * 1024 * 1024);

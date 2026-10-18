@@ -10,11 +10,14 @@ using Harmony;
 
 namespace BattletechCoop.Sync
 {
-    // Level B ship co-op (DESIGN.md "Ship requests"): the guest's ship is a throwaway copy of the
+    // Level B ship co-op (DESIGN.md "Campaign layer"): the guest's ship is a throwaway copy of the
     // host's, so its own game applies a refit or pilot change at once (the guest sees it), and the
     // same change goes to the host as a request. The host rebuilds it with its own objects through
     // the game's own functions (work orders, UpgradePilot), so costs, refit time and parts from
     // storage work as if the host had done it, then replies applied/refused.
+    //
+    // The host's own changes of the same kinds go the other way as updates, which each guest
+    // applies to its copy the same way, so small changes need no full ship reload.
     //
     // Refits are sent as their work orders (install/remove, armor, structure, component repair),
     // not as objects: parts the guest took from storage get new IDs on the guest, and the host's
@@ -23,6 +26,7 @@ namespace BattletechCoop.Sync
     {
         public const ushort ChannelRequest = 21;
         public const ushort ChannelReply = 22;
+        public const ushort ChannelUpdate = 23;
 
         private const byte KindRefit = 1, KindRename = 2, KindPilotSkills = 3, KindPilotNames = 4;
         private const byte EntryBase = 0, EntryInstall = 1, EntryArmor = 2, EntryStructure = 3, EntryRepair = 4;
@@ -30,34 +34,53 @@ namespace BattletechCoop.Sync
         public static string Notice { get; private set; } = "";
         public static float NoticeUntil { get; private set; }
 
-        // Guest: requests are sent only while showing the host's ship.
-        private static CoopSession GuestSession()
+        // While a change from the other side is being applied, the capture patches stay quiet.
+        private static bool applyingRemote;
+        private static readonly List<byte[]> queuedUpdates = new List<byte[]>();
+        private static bool screensDirty;
+
+        private static string Who => CoopController.Instance?.Session?.Role == SessionRole.Guest ? "guest" : "host";
+
+        // A change made here goes out when on the ship in a session: the guest asks the host (only
+        // while showing the host's ship), the host tells its guests.
+        private static CoopSession CaptureSession()
         {
+            if (applyingRemote) return null;
             var session = CoopController.Instance?.Session;
-            if (session == null || session.Role != SessionRole.Guest || session.State != SessionState.Active) return null;
-            if (!ShipView.GuestViewing || CombatSync.Current != null) return null;
+            if (session == null || session.State != SessionState.Active || CombatSync.Current != null) return null;
             var game = UnityGameInstance.BattleTechGame;
-            return game?.Simulation != null && game.Combat == null ? session : null;
+            if (game?.Simulation == null || game.Combat != null) return null;
+            if (session.Role == SessionRole.Guest) return ShipView.GuestViewing ? session : null;
+            return session.Players.Any(p => p.Index != 0) ? session : null;
         }
 
         private static void Send(CoopSession session, byte kind, string what, Action<BinaryWriter> body)
         {
-            session.SendGame(ChannelRequest, Build(w => { w.Write(kind); w.Write(what); body(w); }));
-            Log.Info("SHIP guest: asked the host to " + what);
+            var payload = Build(w => { w.Write(kind); w.Write(what); body(w); });
+            if (session.Role == SessionRole.Guest)
+            {
+                session.SendGame(ChannelRequest, payload);
+                Log.Info("SHIP guest: asked the host to " + what);
+            }
+            else
+            {
+                session.SendGame(ChannelUpdate, payload);
+                Log.Info("SHIP host: told the guests: " + what);
+            }
         }
 
-        // ---- Guest: capture ----
+        // ---- Capture (both sides) ----
 
-        public static void GuestRename(MechDef mech, string newName)
+        public static void CaptureRename(MechDef mech, string newName)
         {
-            var session = GuestSession();
+            var session = CaptureSession();
             if (session == null || mech == null || newName == null || mech.Name == newName) return;
             Send(session, KindRename, $"rename '{mech.Name}' to '{newName}'", w => { w.Write(mech.GUID); w.Write(newName); });
         }
 
-        public static void GuestRefit(SimGameState sim, WorkOrderEntry_MechLab entry)
+        public static void CaptureRefit(SimGameState sim, WorkOrderEntry_MechLab entry)
         {
-            var session = GuestSession();
+            var session = CaptureSession();
             if (session == null || entry == null) return;
             var mech = sim.GetMechByID(entry.MechID);
             var name = mech?.Name ?? entry.MechID;
@@ -69,14 +92,14 @@ namespace BattletechCoop.Sync
             }
             catch (NotSupportedException e)
             {
-                ShowNotice($"Not sent to the host: {e.Message}");
-                Log.Info("SHIP guest: refit not sent: " + e.Message);
+                ShowNotice($"Refit not shared with the other players: {e.Message}");
+                Log.Info($"SHIP {Who}: refit not sent: " + e.Message);
             }
         }
 
-        public static void GuestPilotSkills(Pilot before, Pilot after)
+        public static void CapturePilotSkills(Pilot before, Pilot after)
         {
-            var session = GuestSession();
+            var session = CaptureSession();
             if (session == null || before == null || after == null) return;
             var xp = after.SpentXP - before.SpentXP;
             Send(session, KindPilotSkills,
@@ -89,9 +112,9 @@ namespace BattletechCoop.Sync
                 });
         }
 
-        public static void GuestPilotNames(Pilot pilot)
+        public static void CapturePilotNames(Pilot pilot)
         {
-            var session = GuestSession();
+            var session = CaptureSession();
             if (session == null || pilot == null) return;
             var d = pilot.pilotDef.Description;
             Send(session, KindPilotNames, $"rename pilot to '{d.Callsign}' ({d.FirstName} {d.LastName})", w =>
@@ -145,6 +168,13 @@ namespace BattletechCoop.Sync
 
         public static void HandleGameMessage(CoopSession session, byte sender, ushort channel, byte[] payload)
         {
+            if (channel == ChannelUpdate && session.Role == SessionRole.Guest)
+            {
+                // A ship still loading predates this change: apply it once the ship is showing.
+                if (ShipView.Ready) ApplyUpdate(payload);
+                else queuedUpdates.Add(payload);
+                return;
+            }
             using (var r = new BinaryReader(new MemoryStream(payload), Encoding.UTF8))
             {
                 if (channel == ChannelReply && session.Role == SessionRole.Guest)
@@ -159,39 +189,141 @@ namespace BattletechCoop.Sync
                     var kind = r.ReadByte();
                     var what = r.ReadString();
                     var player = session.Players.FirstOrDefault(p => p.Index == sender)?.Name ?? $"player {sender}";
-                    string result;
-                    bool ok;
-                    try
-                    {
-                        result = Apply(kind, r);
-                        ok = result == null;
-                    }
-                    catch (Exception e)
-                    {
-                        Log.Error($"SHIP host: {player}'s request failed ({what})", e);
-                        result = "the host's game could not apply it (see the host's log)";
-                        ok = false;
-                    }
+                    var result = ApplyRemote(kind, r, what);
+                    var ok = result == null;
                     Log.Info($"SHIP host: {(ok ? "applied" : "refused")} {player}'s request to {what}{(ok ? "" : ": " + result)}");
                     ShowNotice(ok ? $"{player}: {what}" : $"Refused {player}'s request to {what}: {result}");
                     session.SendGame(ChannelReply, Build(w => { w.Write(ok); w.Write(ok ? what : $"{what}: {result}"); }), sender);
+                    // Other guests get it as an update; the sender already has it.
+                    if (ok)
+                        foreach (var p in session.Players.Where(p => p.Index != 0 && p.Index != sender))
+                            session.SendGame(ChannelUpdate, payload, p.Index);
                 }
             }
         }
 
-        private static void ShowNotice(string text)
+        // A full ship save supersedes the updates sent before it.
+        public static void ShipSaveReceived() => queuedUpdates.Clear();
+
+        private static void ApplyUpdate(byte[] payload)
         {
-            Notice = text;
-            NoticeUntil = UnityEngine.Time.realtimeSinceStartup + 8f;
+            using (var r = new BinaryReader(new MemoryStream(payload), Encoding.UTF8))
+            {
+                var kind = r.ReadByte();
+                var what = r.ReadString();
+                var result = ApplyRemote(kind, r, what);
+                if (result == null)
+                {
+                    Log.Info("SHIP guest: applied the host's change: " + what);
+                    ShowNotice("Host: " + what);
+                }
+                else
+                {
+                    Log.Info($"SHIP guest: could not apply the host's change ({what}): {result}");
+                    ShowNotice($"Could not show the host's change ({what}): {result}. Use \"Refresh the host's ship\".");
+                }
+            }
         }
 
-        // ---- Host: apply. Returns null when applied, else why not. ----
+        private static string ApplyRemote(byte kind, BinaryReader r, string what)
+        {
+            applyingRemote = true;
+            try
+            {
+                var result = Apply(kind, r);
+                if (result == null) screensDirty = true;
+                return result;
+            }
+            catch (Exception e)
+            {
+                Log.Error($"SHIP {Who}: could not apply '{what}'", e);
+                return "the game could not apply it (see BattletechCoop.log)";
+            }
+            finally
+            {
+                applyingRemote = false;
+            }
+        }
+
+        public static void ShowNotice(string text, float seconds = 8f)
+        {
+            Notice = text;
+            NoticeUntil = UnityEngine.Time.realtimeSinceStartup + seconds;
+        }
+
+        public static void Reset()
+        {
+            queuedUpdates.Clear();
+            screensDirty = false;
+        }
+
+        public static void Update()
+        {
+            if (queuedUpdates.Count > 0 && ShipView.Ready)
+            {
+                var updates = queuedUpdates.ToArray();
+                queuedUpdates.Clear();
+                foreach (var u in updates) ApplyUpdate(u);
+            }
+            if (screensDirty) RedrawScreens();
+        }
+
+        // After a change from the other side, redraw the Mech Bay or Barracks if open, as the game
+        // does after its own changes. Waits while the MechLab is open or a pilot has unconfirmed
+        // training, so nothing the player is editing is thrown away.
+        // The screens stay in the scene after first use; Visible says whether one is up.
+        private static bool IsOpen(UIModule module) => module != null && module.gameObject.activeInHierarchy && module.Visible;
+
+        private static void RedrawScreens()
+        {
+            try
+            {
+                var sim = UnityGameInstance.BattleTechGame?.Simulation;
+                if (sim == null) { screensDirty = false; return; }
+                var mechLab = UnityEngine.Object.FindObjectOfType<MechLabPanel>();
+                if (IsOpen(mechLab)) return;
+                var detail = UnityEngine.Object.FindObjectOfType<SGBarracksMWDetailPanel>();
+                Pilot shown = null;
+                if (IsOpen(detail))
+                {
+                    var t = Traverse.Create(detail);
+                    shown = t.Field("curPilot").GetValue<Pilot>();
+                    if (!ReferenceEquals(shown, t.Field("tempPilot").GetValue<Pilot>())) return;
+                }
+                screensDirty = false;
+
+                var bay = UnityEngine.Object.FindObjectOfType<MechBayPanel>();
+                if (IsOpen(bay) && bay.Initialized)
+                {
+                    bay.RefreshData(false);
+                    // As the end of MechBayPanel.OnMechLabComplete: select the same bay slot again.
+                    var t = Traverse.Create(bay);
+                    var group = t.Field("bayGroupWidget").GetValue();
+                    var slot = t.Field("selectedBaySlot").GetValue();
+                    var unit = group == null ? null : Traverse.Create(group).Method("GetMechUnitForSlot", slot).GetValue();
+                    if (unit != null) t.Method("SelectMech", unit, true).GetValue();
+                }
+                var barracks = UnityEngine.Object.FindObjectOfType<SGBarracksWidget>();
+                if (IsOpen(barracks))
+                {
+                    var pilot = shown == null ? null : FindPilot(sim, shown.GUID);
+                    barracks.Reset(pilot ?? sim.Commander);
+                }
+            }
+            catch (Exception e)
+            {
+                screensDirty = false;
+                Log.Error("SHIP: could not redraw the open screen", e);
+            }
+        }
+
+        // ---- Apply a change from the other side. Returns null when applied, else why not. ----
 
         private static string Apply(byte kind, BinaryReader r)
         {
             var game = UnityGameInstance.BattleTechGame;
             var sim = game?.Simulation;
-            if (sim == null || game.Combat != null || CombatSync.Current != null) return "the host is not on the ship";
+            if (sim == null || game.Combat != null || CombatSync.Current != null) return "not on the ship";
             switch (kind)
             {
                 case KindRename: return ApplyRename(sim, r.ReadString(), r.ReadString());
@@ -205,10 +337,10 @@ namespace BattletechCoop.Sync
         private static string ApplyRename(SimGameState sim, string mechId, string newName)
         {
             var mech = sim.GetMechByID(mechId);
-            if (mech == null) return "the host has no such 'Mech";
+            if (mech == null) return "no such 'Mech";
             mech.RenameMech(newName, null, null);
             sim.RoomManager?.RefreshTimeline(false);
-            Log.Info($"SHIP host: 'Mech {mech.GUID} is now '{mech.Name}'");
+            Log.Info($"SHIP {Who}: 'Mech {mech.GUID} is now '{mech.Name}'");
             return null;
         }
 
@@ -218,8 +350,8 @@ namespace BattletechCoop.Sync
             {
                 var mechId = r.ReadString();
                 var mech = sim.GetMechByID(mechId);
-                if (mech == null) return "the host has no such 'Mech";
-                if (sim.GetWorkOrderEntryForMech(mech) != null) return $"'{mech.Name}' already has a refit in progress on the host";
+                if (mech == null) return "no such 'Mech";
+                if (sim.GetWorkOrderEntryForMech(mech) != null) return $"'{mech.Name}' already has a refit in progress";
                 var entry = ReadEntry(r, sim, mech) as WorkOrderEntry_MechLab;
                 if (entry == null) return "unexpected work order";
                 var cost = entry.GetCBillCostForIncompleteTasks();
@@ -231,7 +363,7 @@ namespace BattletechCoop.Sync
                 sim.InitializeMechLabEntry(entry, 0);
                 sim.UpdateMechLabWorkQueue(false);
                 sim.RoomManager?.RefreshTimeline(false);
-                Log.Info($"SHIP host: queued refit '{mech.Name}' ({CountTasks(entry)} tasks, {cost} C-Bills), funds {funds} -> {sim.Funds}");
+                Log.Info($"SHIP {Who}: queued refit '{mech.Name}' ({CountTasks(entry)} tasks, {cost} C-Bills), funds {funds} -> {sim.Funds}");
                 return null;
             }
         }
@@ -317,7 +449,7 @@ namespace BattletechCoop.Sync
             var component = new MechComponentRef(defId, sim.GenerateSimGameUID(), type, location, hardpoint, damage, false);
             component.DataManager = sim.DataManager;
             component.RefreshComponentDef();
-            if (component.Def == null) throw new InvalidDataException($"the host has no part '{defId}' (different mods?)");
+            if (component.Def == null) throw new InvalidDataException($"this game has no part '{defId}' (different mods?)");
             return component;
         }
 
@@ -329,7 +461,9 @@ namespace BattletechCoop.Sync
             var pilot = FindPilot(sim, r.ReadString());
             var target = new[] { r.ReadInt32(), r.ReadInt32(), r.ReadInt32(), r.ReadInt32() };
             var xp = r.ReadInt32();
-            if (pilot == null) return "the host has no such pilot";
+            if (pilot == null) return "no such pilot";
+            if (target[0] == pilot.Gunnery && target[1] == pilot.Piloting && target[2] == pilot.Guts && target[3] == pilot.Tactics)
+                return null; // already applied
             if (xp > pilot.UnspentXP) return $"needs {xp} XP, the pilot has {pilot.UnspentXP}";
 
             var p = Train(sim, pilot, target, out var error);
@@ -337,7 +471,7 @@ namespace BattletechCoop.Sync
             if (xp > 0) p.SpendExperience(0, "Advancement", (uint)xp);
             sim.UpgradePilot(p);
             sim.RoomManager?.RefreshTimeline(false);
-            Log.Info("SHIP host: pilot now " + PilotSummary(FindPilot(sim, pilot.GUID)));
+            Log.Info($"SHIP {Who}: pilot now " + PilotSummary(FindPilot(sim, pilot.GUID)));
             return null;
         }
 
@@ -354,7 +488,7 @@ namespace BattletechCoop.Sync
             var p = pilot;
             for (var s = 0; s < skills.Length; s++)
             {
-                if (target[s] < current[s]) { error = $"{skills[s]} is already {current[s]} on the host"; return null; }
+                if (target[s] < current[s]) { error = $"{skills[s]} is already {current[s]}"; return null; }
                 for (var level = current[s]; level < target[s]; level++)
                 {
                     var def = p.ToPilotDef(true);
@@ -380,7 +514,7 @@ namespace BattletechCoop.Sync
             var callsign = r.ReadString();
             var gender = r.ReadInt32();
             var voice = r.ReadString();
-            if (pilot == null) return "the host has no such pilot";
+            if (pilot == null) return "no such pilot";
             // As SGBarracksMWCustomizationPopup.Save (portraits are not sent yet).
             var d = pilot.pilotDef.Description;
             d.SetFirstName(first);
@@ -390,7 +524,7 @@ namespace BattletechCoop.Sync
             d.SetGender((Gender)gender);
             if (voice.Length > 0) pilot.pilotDef.SetVoice(voice);
             sim.RoomManager?.RefreshTimeline(false);
-            Log.Info("SHIP host: pilot now " + PilotSummary(pilot));
+            Log.Info($"SHIP {Who}: pilot now " + PilotSummary(pilot));
             return null;
         }
 
@@ -415,7 +549,7 @@ namespace BattletechCoop.Sync
         static void Prefix(MechBayPanel __instance, string newMechNickname)
         {
             var mech = Traverse.Create(__instance).Field("selectedMech").GetValue<MechBayMechUnitElement>()?.MechDef;
-            ShipRequests.GuestRename(mech, newMechNickname);
+            ShipRequests.CaptureRename(mech, newMechNickname);
         }
     }
 
@@ -423,7 +557,7 @@ namespace BattletechCoop.Sync
     [HarmonyPatch(typeof(SimGameState), "InitializeMechLabEntry")]
     public static class InitializeMechLabEntryPatch
     {
-        static void Prefix(SimGameState __instance, WorkOrderEntry_MechLab entry) => ShipRequests.GuestRefit(__instance, entry);
+        static void Prefix(SimGameState __instance, WorkOrderEntry_MechLab entry) => ShipRequests.CaptureRefit(__instance, entry);
     }
 
     [HarmonyPatch(typeof(SGBarracksMWDetailPanel), "OnPilotConfirmAccepted")]
@@ -432,7 +566,7 @@ namespace BattletechCoop.Sync
         static void Prefix(SGBarracksMWDetailPanel __instance)
         {
             var t = Traverse.Create(__instance);
-            ShipRequests.GuestPilotSkills(t.Field("curPilot").GetValue<Pilot>(), t.Field("tempPilot").GetValue<Pilot>());
+            ShipRequests.CapturePilotSkills(t.Field("curPilot").GetValue<Pilot>(), t.Field("tempPilot").GetValue<Pilot>());
         }
     }
 
@@ -443,6 +577,6 @@ namespace BattletechCoop.Sync
         static System.Reflection.MethodBase TargetMethod() => AccessTools.Method(AccessTools.TypeByName("SGBarracksMWCustomizationPopup"), "Save");
 
         static void Postfix(object __instance) =>
-            ShipRequests.GuestPilotNames(Traverse.Create(__instance).Property("pilot").GetValue<Pilot>());
+            ShipRequests.CapturePilotNames(Traverse.Create(__instance).Property("pilot").GetValue<Pilot>());
     }
 }
