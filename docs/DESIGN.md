@@ -315,6 +315,23 @@ diagnostics to settle it: every cancelled `OrderSequence` is logged with its uni
 stack, every stream line names its unit, and the full state of both sides is dumped at the first
 desync. There is also a large red on-screen banner, because the corner text went unnoticed.
 
+**2026-10-17, third human test (0.0.5): the desync was reproduced on purpose and is a false
+alarm.** Both players gave orders to different mechs at the same time in the free-move phase.
+The guest reported `DESYNC at seq 3` for `ec9d2280….0`, which the host had just ordered to move
+(seq 2, 2 s earlier). On the host the mech was mid-walk; on the guest it had not started walking
+yet. The guest's reserve order (seq 3) ran on the host before the walk ended, because free-move
+orders don't wait for other units' moves. **Every later check matched** (the guest's desync count
+stayed at 1 for the rest of the match, as in the first session), and no order sequence was
+cancelled. So the games did not diverge: the checker compared a unit in the middle of a sequence
+that runs on each machine's own clock.
+
+Fix (0.0.6): `StateText` renders a unit that still has an `OrderSequence` running (normal or
+parallel stack, children of multi-sequences included) as `<GUID> busy`. The comparison skips
+units busy on either side, and they get compared at the next check where both have them at rest.
+The desync self-test still catches injected corruption at the exact seq. The full shared mission
+passes (239 items, 37 guest orders). Checks that skip busy units are logged, so the next human
+session confirms that walking units are detected.
+
 Not covered by these tests: a human using the HUD on either machine, in particular how the HUD
 reacts when the other player's order moves a unit, and whether the guest's HUD waits correctly
 between sending an order and seeing it replayed. That needs the 0.0.3 human test.

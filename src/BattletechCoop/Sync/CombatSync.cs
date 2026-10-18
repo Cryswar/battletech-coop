@@ -444,9 +444,14 @@ namespace BattletechCoop.Sync
             var item = applying;
             applying = null;
             var state = StateText.Render(combat);
-            if (state != item.State)
+            var differences = StateText.Differences(item.State, state);
+            var busyHost = item.State.Split('\n').Count(l => l.EndsWith(" busy", StringComparison.Ordinal));
+            var busyGuest = state.Split('\n').Count(l => l.EndsWith(" busy", StringComparison.Ordinal));
+            if (busyHost + busyGuest > 0)
+                Log.Info($"SYNC diag: seq {item.Seq} check skipped units still acting (host {busyHost}, guest {busyGuest})");
+            if (differences.Count > 0)
             {
-                ReportDesync(item.Seq, $"state differs before {item.TypeName} id={invocation.InvocationID}:\n{StateText.Diff(item.State, state)}");
+                ReportDesync(item.Seq, $"state differs before {item.TypeName} id={invocation.InvocationID}:\n{StateText.Diff(differences)}");
                 if (Desyncs == 1) Log.Info($"SYNC diag: full state at first desync (seq {item.Seq})\n--- host ---\n{item.State}--- guest ---\n{state}");
             }
         }
