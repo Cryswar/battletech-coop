@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Text;
 using BattleTech;
+using HBS;
 using BattletechCoop.Net;
 using Steamworks;
 using UnityEngine;
@@ -111,6 +112,7 @@ namespace BattletechCoop
                         if (hasValue && !args[i + 1].StartsWith("-")) autoSkirmishMap = args[i + 1];
                         break;
                     case "-coop-save-transfer": SaveTransferTest = true; break;
+                    case "-coop-test-rehost": rehostTestRounds = 3; break;
                     case "-coop-no-saves": Sync.SaveGuard.NoSavesFlag = true; break;
                     case "-coop-deep-state": Sync.StateText.Deep = true; break;
                     case "-coop-inject-desync":
@@ -200,8 +202,41 @@ namespace BattletechCoop
             testSent = false;
             session.PlayerJoined += p => Notify($"{p.Name} is player {p.Index}");
             session.PlayerLeft += (p, reason) => Notify($"{p.Name} left: {reason}");
-            session.Closed += reason => Notify("Session ended: " + reason);
+            session.Closed += reason => OnSessionClosed(session, reason);
             session.GameMessage += OnGameMessage;
+        }
+
+        private float returnToMenuAt = -1;
+
+        private void OnSessionClosed(CoopSession session, string reason)
+        {
+            Notify("Session ended: " + reason);
+            Sync.CombatSync.ResetForSessionEnd();
+            // A guest left inside the host's battle or campaign would keep playing a copy that
+            // can't affect anything ("ghost campaign"): go back to the main menu shortly after.
+            if (session.Role == SessionRole.Guest && Sync.CombatSync.GuestInHostGame && !Sync.AutoSkirmish.MainMenuShowing)
+            {
+                Notify("The co-op session ended: returning to the main menu in a few seconds");
+                returnToMenuAt = Time.realtimeSinceStartup + 6f;
+            }
+            Sync.CombatSync.GuestInHostGame = false;
+        }
+
+        private void UpdateReturnToMenu()
+        {
+            if (returnToMenuAt < 0 || Time.realtimeSinceStartup < returnToMenuAt) return;
+            returnToMenuAt = -1;
+            if (Sync.AutoSkirmish.MainMenuShowing) return;
+            if (Session != null && Session.IsOpen) return; // rejoined in the meantime
+            try
+            {
+                Log.Info("Returning to the main menu after the co-op session ended");
+                LazySingletonBehavior<BattleTech.Save.LoadTransitioning>.Instance.GoToMainMenu();
+            }
+            catch (Exception e)
+            {
+                Log.Error("Could not return to the main menu", e);
+            }
         }
 
         private void OnGameMessage(byte sender, ushort channel, byte[] payload)
@@ -256,6 +291,8 @@ namespace BattletechCoop
                 showWindow = !showWindow;
 
             EnsureSteam();
+            UpdateRehostTest();
+            UpdateReturnToMenu();
             if (Session == null) return;
             try
             {
@@ -282,6 +319,28 @@ namespace BattletechCoop
             {
                 Log.Error("Combat sync update failed", e);
             }
+        }
+
+        // -coop-test-rehost: host via Steam, leave, host again, a few times (reported re-host bug).
+        private int rehostTestRounds;
+        private float rehostNextStep = -1;
+
+        private void UpdateRehostTest()
+        {
+            if (rehostTestRounds <= 0 || !steamReady || Time.realtimeSinceStartup < rehostNextStep) return;
+            var steam = Session?.Transport as SteamTransport;
+            if (Session == null || !Session.IsOpen)
+            {
+                Log.Info($"REHOST TEST: hosting (rounds left {rehostTestRounds})");
+                HostSteam();
+                rehostNextStep = Time.realtimeSinceStartup + 10f; // lobby must exist by then
+                return;
+            }
+            Log.Info($"REHOST TEST: lobby ready={steam != null && steam.LobbyReady} ({Session.Transport.Name}); leaving");
+            Leave();
+            rehostTestRounds--;
+            rehostNextStep = Time.realtimeSinceStartup + 3f;
+            if (rehostTestRounds == 0) Log.Info("REHOST TEST: done");
         }
 
         private void UpdateTestModes()

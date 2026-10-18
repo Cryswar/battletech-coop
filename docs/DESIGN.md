@@ -182,6 +182,25 @@ Implementation notes and results (2026-10-17):
 - Save-transfer full mission with full-stat comparison: **PASS** (176 items, 38 guest orders,
   24 guest AI completions, 0 desyncs).
 
+**2026-10-17, first human campaign test (0.0.7, two PCs over Steam): works.** A campaign mission
+reached the guest as a combat save (656 KB) after the host's "Begin mission" and reload; 77 items,
+17 of them guest orders (moves, attacks, jump, melee, DFA), 0 desyncs. The busy-unit skip from
+0.0.6 fired about a dozen times on the guest with no false alarm. Both saw the results screen and
+salvage, and the guest's post-mission save (`SIM_GAME_COMPLETED_CONTRACT`) was blocked.
+Reported issues:
+
+- **Re-hosting failed after a lobby ended** until the game was restarted. A plain
+  host/leave/host cycle works (`-coop-test-rehost`, 3 rounds). The fix in 0.0.8 covers the likely
+  cause: a session closing mid-battle left a `CombatSync` bound to the dead session, which skipped
+  the next launch ("already in co-op combat") and stopped the guest's menu reports. A closed
+  session now clears all combat-sync state.
+- **Ghost campaign:** after the host quit, the guest kept playing its local copy of the host's
+  campaign. In 0.0.8, a guest whose session ends while it is in the host's battle or campaign
+  gets a notice and returns to the main menu after 6 s (`-HostQuitTest`: PASS).
+- The guest sees nothing of the campaign management screen until a mission starts: ship view, next.
+- The guest misses the opening conversation, because the save is only possible once
+  `CanSave` holds, i.e. after it. Next.
+
 Not yet tested: a real Campaign or Career mission (story scripts, Flashpoints, a non-skirmish
 `SimGameState` on both sides), loading while the guest is in the SimGame rather than the main
 menu, Ironman campaigns, and the mission-end and AAR flow back to the ship on the guest.

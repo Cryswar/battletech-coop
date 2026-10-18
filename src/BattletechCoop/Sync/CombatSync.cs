@@ -193,6 +193,7 @@ namespace BattletechCoop.Sync
             Current = new CombatSync(session, false, combatId, mode);
             Log.Info($"SYNC guest: launching host's combat {combatId} ({data.Length} bytes), autoplay={mode}");
 
+            GuestInHostGame = true;
             LanceLoader.PrepareGuestLance(contract, () => ContractLauncher.LaunchFromMenu(contract));
         }
 
@@ -227,6 +228,7 @@ namespace BattletechCoop.Sync
             {
                 var save = SaveTransfer.Deserialize(guestSave);
                 Log.Info($"SYNC guest: loading the host's combat save (skirmish={save.IsSkirmish})");
+                GuestInHostGame = true;
                 // LoadTransitioning.Load takes a save slot and reads it from disk; FileReadComplete is
                 // where that read hands over the GameInstanceSave, so the in-memory save takes the
                 // same path from there (combat-restart check, curtain, scene switch, GameInstance.Load).
@@ -260,6 +262,22 @@ namespace BattletechCoop.Sync
                 nextMenuReport = UnityEngine.Time.realtimeSinceStartup + 2f;
                 session.SendGame(ChannelMenuReady, Build(w => w.Write(inMenu)));
             }
+        }
+
+        // Guest: playing a battle or campaign that came from the host (skirmish launch or combat
+        // save), which makes no sense to keep playing once the host is gone.
+        public static bool GuestInHostGame;
+
+        // The session ended (left, kicked, host gone): drop everything tied to it, so a new session
+        // starts clean. Before this, a lobby ended mid-battle left a CombatSync bound to the dead
+        // session behind, and the next launch was skipped as "already in co-op combat".
+        public static void ResetForSessionEnd()
+        {
+            if (Current != null) Log.Info($"SYNC end (session closed): {Current.Status}");
+            Current = null;
+            pendingStart = null;
+            GuestsInMenu.Clear();
+            lastMenuReported = false;
         }
 
         public static void End(string reason)

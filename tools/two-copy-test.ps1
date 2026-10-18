@@ -19,6 +19,8 @@ param(
     [switch]$SaveTransfer,
     # Compare every unit, pilot and component statistic, not just a digest (slower, bigger).
     [switch]$DeepState,
+    # After -TargetSeq items, kill the host's game; PASS needs the guest to return to its main menu.
+    [switch]$HostQuitTest,
     [int]$TargetSeq = 60,
     [double]$TimeScale = 3,
     [string]$Map = '',
@@ -117,6 +119,14 @@ try {
                 $lastReport = Get-Date
             }
             Start-Sleep -Seconds 1
+        }
+        if ($passed -and $HostQuitTest) {
+            Write-Host "killing the host's game to check the guest's return to the main menu"
+            Stop-Process -Id $hostProc.Id -Force
+            $back = Wait-ForLog $guestLog 'Returning to the main menu' $guestProc (Get-Date).AddSeconds(90)
+            Start-Sleep -Seconds 10
+            if (-not $back) { $passed = $false; $reason += "; guest did not return to the main menu after the host quit" }
+            else { $reason += "; guest returned to the main menu after the host quit" }
         }
         # Let the logs settle, then re-check for late desyncs.
         Start-Sleep -Seconds 2
