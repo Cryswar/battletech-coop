@@ -197,7 +197,8 @@ Reported issues:
 - **Ghost campaign:** after the host quit, the guest kept playing its local copy of the host's
   campaign. In 0.0.8, a guest whose session ends while it is in the host's battle or campaign
   gets a notice and returns to the main menu after 6 s (`-HostQuitTest`: PASS).
-- The guest sees nothing of the campaign management screen until a mission starts: ship view, next.
+- The guest sees nothing of the campaign management screen until a mission starts: ship view
+  and requests in 0.0.9 (see "Campaign layer").
 - The guest misses the opening conversation, because the save is only possible once
   `CanSave` holds, i.e. after it. Next.
 
@@ -221,17 +222,39 @@ menu, Ironman campaigns, and the mission-end and AAR flow back to the ship on th
 
 - The campaign state is changed by direct method calls from many UI screens. There is no
   order layer, so the campaign is **not** lockstepped.
-- The host is the only writer. Guests get a save snapshot from the host on connect, after
-  each change that matters, and before every mission. Guests browse it with all actions blocked
-  except the whitelisted ones below.
-- Mech ownership: a company tag/stat on each mech (`coop.owner=<steamid>`), set in the lance
-  screen or barracks. It lives in the save, so it persists.
-- **Guest refit flow:** the guest edits in the normal MechLab on its local copy. On confirm,
-  the guest sends `{mechGuid, new MechDef}` instead of creating the work order. The host
-  validates it (owner, parts in storage, c-bills) and creates the work order through the
-  game's own MechLab path, then resends the snapshot. A failure goes back as a toast message.
-- **Pilots:** same pattern for skill spending, callsign and portrait, limited to pilots the
-  guest owns.
+- The host is the only writer. The guest's ship is a throwaway copy of the host's campaign;
+  changes the guest makes there are local except the requests below.
+- **Ship view (0.0.9).** The host sends its campaign as an in-memory save (same bytes as a save
+  file, ~390 KB) when it arrives on the ship, when a guest joins, and when a guest presses
+  "Refresh the host's ship"; at most every 10 s and only where `SimGameState.CanSave` holds. The
+  guest loads it through `LoadTransitioning.FileReadComplete`, as with mission saves. The new
+  `SimGameState` exists before the save is applied to it (default company, funds 0), so the guest
+  counts the ship as showing only after the game's own `_OnAttachUXComplete` for the received
+  company. Saving stays blocked on the guest.
+- **Requests (0.0.9).** The guest's game applies a change at once (so the player sees it), and
+  the same change goes to the host. The host rebuilds it through the game's own functions with
+  its own objects and replies applied/refused, shown as a notice on both screens:
+  - *Refits and repairs:* captured at `SimGameState.InitializeMechLabEntry`, which MechLab
+    confirm, repair and repair-all all go through. Sent as their work orders (install/remove,
+    armor, structure, component repair), not objects: a part taken from storage gets a new ID on
+    the guest, and the host's game takes the same part type from its own storage. The host
+    re-creates each order with `CreateComponentInstallWorkOrder` / `CreateMechArmorModifyWorkOrder`
+    / `CreateMechRepairWorkOrder` / `CreateComponentRepairWorkOrder`, then does what
+    `MechBayPanel.OnMechLabComplete` does without the UI (queue, `InitializeMechLabEntry`,
+    `UpdateMechLabWorkQueue`). So costs and refit time are the host game's own. Refused when the
+    'Mech already has a refit in progress on the host, or when funds are short.
+  - *'Mech names:* `MechBayPanel.OnMechLabComplete` (renames happen there even without orders).
+  - *Pilot training:* `SGBarracksMWDetailPanel.OnPilotConfirmAccepted` sends the target skill
+    levels and the XP spent; the host repeats `SGBarracksAdvancementPanel.SetTempPilotSkill` a
+    level at a time (abilities from `AbilityTree`), spends the XP, and calls `UpgradePilot`.
+    Refused when the host's pilot lacks the XP or already has a higher level.
+  - *Pilot names:* after `SGBarracksMWCustomizationPopup.Save`: first/last name, callsign,
+    gender, voice. Portraits are not sent yet.
+- Control is shared, as in combat: either player may refit any 'Mech or train any pilot. Owners
+  (a company tag per 'Mech, e.g. `coop.owner=<steamid>`) can come later as an option.
+- Not covered yet: buying and selling, hiring, cancelling a work order, readying or storing a
+  'Mech, pilot portraits, and refits of a 'Mech whose host refit is still in progress. The
+  guest's copy goes stale while the host plays; "Refresh the host's ship" reloads it.
 - Story events and dialogue: shown on all machines, and the host picks. A vote option can
   come later.
 
@@ -277,7 +300,7 @@ Implemented (M0):
 | M2 | Campaign contract via save transfer | Guest loads host save, both run a procedural contract to completion in sync |
 | M3 | Ownership + 8-unit drops | Each client can only command its own lance; Bigger Drops co-installed |
 | M4 | Barriers: dialogue, activation, mission end, retreat | One story mission completes in sync |
-| M5 | Ship level B: guest refit + pilot requests | Guest refit request appears as a work order on host; invalid requests rejected |
+| M5 | Ship level B: guest refit + pilot requests | Guest refit request appears as a work order on host; invalid requests rejected (0.0.9: automated test passes) |
 | M6 | Bot QA suite, installer, Steam invite flow | `automated` QA level honestly earned |
 | M7 | BTA 3062 compatibility pass | Desync-free skirmish under BTA |
 
@@ -425,6 +448,22 @@ What M1 does not cover yet: human orders from the host's HUD (only AI-issued inv
 far, although the HUD's `ReserveActorInvocation` and `MechMovementInvocation` take the same
 path), guest orders (dropped until M3), Steam transport latency during combat, maps other than
 the first, and combat saves/loads.
+
+### Ship view and requests (0.0.9, 2026-10-17)
+
+- `two-copy-test.ps1 -ShipView`: the host loads its newest campaign save read-only
+  (`-coop-test-shipview`, with `-coop-no-saves`) and the guest must show the same company,
+  funds, day and system. **PASS** ('Avalanche's Marauders', funds 647740, day 171, Alloway;
+  391 KB, built in ~0.6 s, guest load ~5-12 s). The first run failed: the guest reported the
+  placeholder `SimGameState` (funds 0) 0.1 s into the load, hence the UX-attached signal.
+- `two-copy-test.ps1 -ShipRequests`: the guest (`-coop-test-requests`) renames a 'Mech, refits
+  it (CT armor -5, one weapon removed), trains a pilot one Gunnery level and renames them,
+  through the same functions the screens call. **PASS**: 4 requests applied, 0 refused; the refit
+  is 2 tasks / 500 C-Bills on both sides (host funds 647740 -> 647240), and the pilot's skills,
+  XP and abilities match exactly. An earlier run hit a null in the game's pop-up code because the
+  guest's screens were still attaching, which the UX-attached signal also fixed.
+- Not yet tested by hand: the real MechLab and barracks screens on the guest, refits finishing
+  on the host as days pass, and parts from storage.
 
 ## Open questions
 

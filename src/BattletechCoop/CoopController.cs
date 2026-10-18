@@ -113,6 +113,8 @@ namespace BattletechCoop
                         break;
                     case "-coop-save-transfer": SaveTransferTest = true; break;
                     case "-coop-test-rehost": rehostTestRounds = 3; break;
+                    case "-coop-test-shipview": shipViewTest = true; break;
+                    case "-coop-test-requests": Sync.ShipRequestTest.Enabled = true; break;
                     case "-coop-no-saves": Sync.SaveGuard.NoSavesFlag = true; break;
                     case "-coop-deep-state": Sync.StateText.Deep = true; break;
                     case "-coop-inject-desync":
@@ -200,7 +202,11 @@ namespace BattletechCoop
         {
             Session = session;
             testSent = false;
-            session.PlayerJoined += p => Notify($"{p.Name} is player {p.Index}");
+            session.PlayerJoined += p =>
+            {
+                Notify($"{p.Name} is player {p.Index}");
+                if (session.Role == SessionRole.Host && p.Index != 0) Sync.ShipView.MarkDirty($"{p.Name} joined");
+            };
             session.PlayerLeft += (p, reason) => Notify($"{p.Name} left: {reason}");
             session.Closed += reason => OnSessionClosed(session, reason);
             session.GameMessage += OnGameMessage;
@@ -212,6 +218,7 @@ namespace BattletechCoop
         {
             Notify("Session ended: " + reason);
             Sync.CombatSync.ResetForSessionEnd();
+            Sync.ShipView.Reset();
             // A guest left inside the host's battle or campaign would keep playing a copy that
             // can't affect anything ("ghost campaign"): go back to the main menu shortly after.
             if (session.Role == SessionRole.Guest && Sync.CombatSync.GuestInHostGame && !Sync.AutoSkirmish.MainMenuShowing)
@@ -241,6 +248,16 @@ namespace BattletechCoop
 
         private void OnGameMessage(byte sender, ushort channel, byte[] payload)
         {
+            if (channel == Sync.ShipView.ChannelShipSave || channel == Sync.ShipView.ChannelShipRefresh)
+            {
+                Sync.ShipView.HandleGameMessage(Session, channel, payload);
+                return;
+            }
+            if (channel == Sync.ShipRequests.ChannelRequest || channel == Sync.ShipRequests.ChannelReply)
+            {
+                Sync.ShipRequests.HandleGameMessage(Session, sender, channel, payload);
+                return;
+            }
             if (channel >= Sync.CombatSync.ChannelCombatStart)
             {
                 Sync.CombatSync.HandleGameMessage(Session, sender, channel, payload);
@@ -312,6 +329,7 @@ namespace BattletechCoop
             try
             {
                 Sync.CombatSync.Current?.Update();
+                Sync.ShipView.Update(Session);
                 Sync.CombatSync.UpdateIdleGuest(Session);
                 UpdateTestModes();
             }
@@ -343,8 +361,26 @@ namespace BattletechCoop
             if (rehostTestRounds == 0) Log.Info("REHOST TEST: done");
         }
 
+        // -coop-test-shipview (host): once a guest is in its main menu, load the newest campaign save
+        // (read-only with -coop-no-saves); the ship view then sends it to the guest.
+        private bool shipViewTest;
+
+        private void UpdateShipViewTest()
+        {
+            if (!shipViewTest || Session.Role != SessionRole.Host || !Sync.AutoSkirmish.MainMenuShowing) return;
+            var guests = Session.Players.Where(p => p.Index != 0).ToList();
+            if (guests.Count == 0 || !guests.All(p => Sync.CombatSync.GuestsInMenu.Contains(p.Index))) return;
+            shipViewTest = false;
+            var slot = UnityGameInstance.BattleTechGame.SaveManager.GameInstanceSaves.MostRecentCampaignSave;
+            if (slot == null) { Log.Error("SHIP test: no campaign save to load"); return; }
+            Log.Info($"SHIP test: loading the newest campaign save '{slot.CompanyName}'");
+            LazySingletonBehavior<BattleTech.Save.LoadTransitioning>.Instance.Load(slot);
+        }
+
         private void UpdateTestModes()
         {
+            UpdateShipViewTest();
+            Sync.ShipRequestTest.Update();
             // Only with -coop-timescale, so normal play (including the game's own pause) is untouched.
             if (!Mathf.Approximately(combatTimeScale, 1f))
             {
@@ -378,6 +414,12 @@ namespace BattletechCoop
             {
                 var label = $"Co-op {Session.Role} · {Session.State} · {Session.Players.Count()} player(s)";
                 GUI.Label(new Rect(Screen.width - 330, 8, 320, 22), label);
+                if (Session.Role == SessionRole.Guest && Sync.ShipView.GuestViewing && Sync.CombatSync.Current == null
+                    && UnityGameInstance.BattleTechGame?.Simulation != null && UnityGameInstance.BattleTechGame.Combat == null)
+                    GUI.Label(new Rect(Screen.width / 2 - 300, 4, 600, 22),
+                        $"Viewing {Sync.ShipView.GuestCompany} (the host's company). Refits, repairs and pilot changes go to the host; other changes are not kept.");
+                if (Time.realtimeSinceStartup < Sync.ShipRequests.NoticeUntil)
+                    GUI.Label(new Rect(Screen.width / 2 - 300, 26, 600, 44), Sync.ShipRequests.Notice);
                 var sync = Sync.CombatSync.Current;
                 if (sync != null)
                 {
@@ -451,6 +493,8 @@ namespace BattletechCoop
                     if (Session.Role == SessionRole.Host && GUILayout.Button("Invite Steam friends")) steam.InviteFriends();
                 }
                 if (Session.State != SessionState.Active) GUILayout.Label("Connecting to host...");
+                if (Session.Role == SessionRole.Guest && Session.State == SessionState.Active && GUILayout.Button("Refresh the host's ship"))
+                    Sync.ShipView.RequestRefresh(Session);
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button("Send test message")) SendTestMessage();
                 if (GUILayout.Button("Send 2 MB test")) SendTestMessage(2 * 1024 * 1024);

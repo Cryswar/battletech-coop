@@ -33,8 +33,9 @@ $notes = @"
 BattleTech Co-op $version (with ModTek $ModTekVersion)
 =====================================================
 
-PRE-ALPHA. Co-op works in SKIRMISH only, with shared control: every player can command every
-mech in the player lance. Campaign contracts are not supported yet (they start single-player).
+PRE-ALPHA. Co-op skirmish and Campaign/Career missions, with shared control: every player can
+command every mech in the player lance. Between missions the friend sees the host's ship and can
+refit mechs and train or rename pilots; the host's game applies those changes.
 
 Install (every player, same zip)
 --------------------------------
@@ -86,6 +87,20 @@ Co-op Campaign / Career missions (new, first test)
 3. Friend: the mission loads by itself; press "Begin mission".
 4. Play as in skirmish. The friend's game never saves while connected (it is running your
    campaign, which must not overwrite their own saves). Your game saves as normal.
+
+Shared ship (new in 0.0.9, first test)
+--------------------------------------
+1. Host: load your campaign or career and connect; the friend joins from the main menu.
+   A few seconds later the friend's game loads your ship (the top of the friend's screen says
+   "Viewing <your company>").
+2. Friend: refit, repair or rename mechs in the Mech Bay, and train or rename pilots in the
+   Barracks, as usual. Each change is sent to the host. A notice at the top of both screens says
+   whether the host's game applied or refused it (for example: not enough C-Bills, or that mech
+   already has a refit in progress on the host).
+3. Anything else the friend does on the ship (buying, selling, hiring, travelling, time
+   passing) is NOT kept: the friend's ship is a copy. Use "Refresh the host's ship" in the co-op
+   window (Ctrl+Shift+C) to see the host's current state; it reloads in a few seconds.
+4. When the host launches a mission, the friend's game follows as before.
 
 Known limits: no saving or loading during co-op combat; if someone disconnects mid-battle, the
 battle cannot be resumed together.

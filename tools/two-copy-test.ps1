@@ -21,6 +21,10 @@ param(
     [switch]$DeepState,
     # After -TargetSeq items, kill the host's game; PASS needs the guest to return to its main menu.
     [switch]$HostQuitTest,
+    # Ship view: the host loads its newest campaign save (read-only); PASS when the guest shows the
+    # same company, funds, day and system the host sent.
+    [switch]$ShipView,
+    [switch]$ShipRequests,
     [int]$TargetSeq = 60,
     [double]$TimeScale = 3,
     [string]$Map = '',
@@ -68,6 +72,9 @@ if ($Combat) {
     $hostArgs += @('-coop-timescale', $ts)
     $guestArgs += @('-coop-timescale', $ts)
     if ($InjectDesyncAt -gt 0) { $guestArgs += @('-coop-inject-desync', "$InjectDesyncAt") }
+} elseif ($ShipView -or $ShipRequests) {
+    $hostArgs += '-coop-test-shipview'
+    if ($ShipRequests) { $guestArgs += '-coop-test-requests' }
 } else {
     $hostArgs += '-coop-test-message'
     $guestArgs += '-coop-test-message'
@@ -83,7 +90,37 @@ try {
     $guestProc = Start-Process "$GuestDir\BattleTech.exe" -WorkingDirectory $GuestDir -PassThru -ArgumentList ($guestArgs + $window)
     Write-Host "guest pid $($guestProc.Id)"
 
-    if (-not $Combat) {
+    if ($ShipRequests) {
+        $done = Wait-ForLog $guestLog 'SHIP test: guest pilot now' $guestProc $deadline
+        $end = (Get-Date).AddSeconds(20)
+        while ((Get-Date) -lt $end -and @(Read-Log $guestLog | Where-Object { $_ -match 'SHIP guest: host (applied|refused)' }).Count -lt 4) { Start-Sleep -Milliseconds 500 }
+        $h = Read-Log $hostLog; $g = Read-Log $guestLog
+        $replies = @($g | Where-Object { $_ -match 'SHIP guest: host (applied|refused)' })
+        $refused = @($replies | Where-Object { $_ -match 'refused' })
+        $errors = @($h + $g | Where-Object { $_ -cmatch '\[ERROR\]' })
+        $askRefit = @($g | Where-Object { $_ -match "asked the host to refit '.*' \((.*)\)$" }) | Select-Object -Last 1
+        $hostRefit = @($h | Where-Object { $_ -match "queued refit '.*' \((.*)\), funds" }) | Select-Object -Last 1
+        $a = if ($askRefit -match "refit '(.*)' \((.*)\)$") { "$($Matches[1]) $($Matches[2])" } else { '' }
+        $b = if ($hostRefit -match "queued refit '(.*)' \((.*)\), funds") { "$($Matches[1]) $($Matches[2])" } else { '' }
+        $gp = @($g | Where-Object { $_ -match 'SHIP test: guest pilot now (.*)$' }) | Select-Object -Last 1
+        $hp = @($h | Where-Object { $_ -match 'SHIP host: pilot now (.*)$' }) | Select-Object -Last 1
+        $gps = if ($gp -match 'guest pilot now (.*)$') { $Matches[1] } else { '' }
+        $hps = if ($hp -match 'host: pilot now (.*)$') { $Matches[1] } else { '' }
+        $passed = $done -and $replies.Count -ge 3 -and $refused.Count -eq 0 -and $errors.Count -eq 0 -and $a -and ($a -eq $b) -and $gps -and ($gps -eq $hps)
+        $reason = "replies $($replies.Count) (refused $($refused.Count)), errors $($errors.Count); refit guest [$a] host [$b]; pilot guest [$gps] host [$hps]"
+        if ($refused.Count -gt 0) { $reason += "; first refusal: $($refused[0])" }
+        if ($errors.Count -gt 0) { $reason += "; first error: $($errors[0])" }
+    }
+    elseif ($ShipView) {
+        $shown = Wait-ForLog $guestLog 'SHIP guest: now showing' $guestProc $deadline
+        $sentLine = @(Read-Log $hostLog | Where-Object { $_ -match 'SHIP host: sent (.*) \(\d+ bytes' }) | Select-Object -Last 1
+        $shownLine = @(Read-Log $guestLog | Where-Object { $_ -match 'SHIP guest: now showing (.*)$' }) | Select-Object -Last 1
+        $sent = if ($sentLine -match 'SHIP host: sent (.*) \(\d+ bytes') { $Matches[1] } else { '' }
+        $seen = if ($shownLine -match 'now showing (.*)$') { $Matches[1] } else { '' }
+        $passed = $shown -and $sent -and ($sent -eq $seen)
+        $reason = "host sent [$sent], guest shows [$seen]"
+    }
+    elseif (-not $Combat) {
         $guestGot = Wait-ForLog $guestLog 'Test message from player 0' $guestProc $deadline
         $hostGot = Wait-ForLog $hostLog 'Test message from player 1' $hostProc $deadline
         $passed = $guestGot -and $hostGot
