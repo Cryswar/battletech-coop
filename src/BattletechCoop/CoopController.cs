@@ -26,6 +26,8 @@ namespace BattletechCoop
     //   -coop-autoskirmish [map]    (host) once a guest has joined, launch a fixed skirmish
     //   -coop-timescale <x>         Unity time scale during combat (speeds up bot tests)
     //   -coop-inject-desync <seq>   (guest) corrupt state before that stream item, to test desync detection
+    //   -coop-save-transfer         (host) send skirmishes to the guest as a combat save, like campaign missions
+    //   -coop-no-saves              never write saves (test copies share the owner's Steam Cloud saves)
     //   +connect_lobby <id>         join a Steam lobby (Steam passes this when launching from an invite)
     public class CoopController : MonoBehaviour
     {
@@ -35,6 +37,7 @@ namespace BattletechCoop
         public static CoopController Instance { get; private set; }
         public CoopSession Session { get; private set; }
         public Sync.AutoplayMode Autoplay { get; private set; }
+        public bool SaveTransferTest { get; private set; }
 
         private bool autoSkirmish;
         private string autoSkirmishMap;
@@ -107,6 +110,9 @@ namespace BattletechCoop
                         autoSkirmish = true;
                         if (hasValue && !args[i + 1].StartsWith("-")) autoSkirmishMap = args[i + 1];
                         break;
+                    case "-coop-save-transfer": SaveTransferTest = true; break;
+                    case "-coop-no-saves": Sync.SaveGuard.NoSavesFlag = true; break;
+                    case "-coop-deep-state": Sync.StateText.Deep = true; break;
                     case "-coop-inject-desync":
                         if (hasValue) Sync.CombatSync.InjectDesyncAt = uint.Parse(args[i + 1]);
                         break;

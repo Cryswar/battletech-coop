@@ -64,14 +64,13 @@ namespace BattletechCoop.Sync
             var session = CoopController.Instance?.Session;
             if (session == null || session.Role != SessionRole.Host || session.State != SessionState.Active) return;
             if (session.Players.Count() < 2 || CombatSync.Current != null) return;
-            if (contract?.ContractTypeValue == null || !contract.ContractTypeValue.IsSkirmish)
-            {
-                Log.Info("SYNC host: not a skirmish; co-op campaign contracts come in M2");
-                return;
-            }
+            // Campaign and Career contracts reach the guest as a combat save (M2); skirmish sends the
+            // contract, unless the -coop-save-transfer test switch asks for the save path.
+            var skirmish = contract?.ContractTypeValue != null && contract.ContractTypeValue.IsSkirmish;
+            var viaSave = !skirmish || CoopController.Instance.SaveTransferTest;
             try
             {
-                CombatSync.BeginAsHost(session, contract, CoopController.Instance.Autoplay);
+                CombatSync.BeginAsHost(session, contract, CoopController.Instance.Autoplay, viaSave);
             }
             catch (Exception e)
             {
@@ -101,6 +100,7 @@ namespace BattletechCoop.Sync
         {
             var sync = CombatSync.Current;
             if (sync == null) return true;
+            if (sync.Reloading) return false;
             return sync.IsHost ? sync.ThinksHere(__instance) : sync.GuestMayThink(__instance);
         }
 
@@ -154,9 +154,22 @@ namespace BattletechCoop.Sync
         }
     }
 
+    // "Begin mission" pressed (by a player or by autoplay): a combat loaded from the host's save
+    // starts playing here.
+    [HarmonyPatch(typeof(BattleTech.UI.Briefing), "BeginPlaying")]
+    public static class BeginPlayingPatch
+    {
+        static void Postfix() => CombatSync.Current?.OnBeginPlaying();
+    }
+
     [HarmonyPatch(typeof(CombatGameState), "OnCombatGameDestroyed")]
     public static class CombatEndPatch
     {
-        static void Postfix() => CombatSync.End("combat closed");
+        static void Postfix()
+        {
+            // The host's own reload of the combat save destroys the old combat; that's not the end.
+            if (CombatSync.Current != null && CombatSync.Current.Reloading) return;
+            CombatSync.End("combat closed");
+        }
     }
 }

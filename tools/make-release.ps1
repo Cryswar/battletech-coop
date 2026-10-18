@@ -76,6 +76,17 @@ Co-op skirmish
    no longer match: finish or quit the battle and send both BattletechCoop.log files and both
    Mods\.modtek\battletech_log.txt files.
 
+Co-op Campaign / Career missions (new, first test)
+--------------------------------------------------
+1. Host: load your campaign (or career) save as usual. Connect, friend joins and waits in the
+   main menu.
+2. Host: pick a contract and launch it as usual. After you press "Begin mission", your game
+   reloads the mission once (about 10 seconds) and shows the briefing again: press "Begin
+   mission" a second time. This is expected: both games then start from exactly the same state.
+3. Friend: the mission loads by itself; press "Begin mission".
+4. Play as in skirmish. The friend's game never saves while connected (it is running your
+   campaign, which must not overwrite their own saves). Your game saves as normal.
+
 Known limits: no saving or loading during co-op combat; if someone disconnects mid-battle, the
 battle cannot be resumed together.
 

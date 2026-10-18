@@ -30,6 +30,8 @@ namespace BattletechCoop.Sync
         public const ushort ChannelMenuReady = 14;
         public const ushort ChannelOrderRequest = 15;
         public const ushort ChannelOrderResult = 16;
+        public const ushort ChannelCombatPending = 17;
+        public const ushort ChannelCombatSave = 18;
 
         // Guest: a combat the host started before this game reached its main menu.
         private static byte[] pendingStart;
@@ -101,6 +103,18 @@ namespace BattletechCoop.Sync
         private uint outstandingRequest;
         private bool completeRequested;
 
+        // M2: the guest gets this combat as a combat save instead of a contract (DESIGN.md).
+        public bool ViaSave { get; private set; }
+        // Host: between sending the combat save and resuming from it (it reloads the same save, so
+        // both sides run identical post-load state; see SendSave).
+        public bool Reloading { get; private set; }
+        private bool saveSent;
+        private byte[] guestSave;
+        private uint saveSeq;
+        private uint saveActivation;
+        private bool saveLoadStarted;
+        private bool saveLoaded;
+
         private CombatSync(CoopSession session, bool isHost, uint combatId, AutoplayMode mode)
         {
             this.session = session;
@@ -114,6 +128,9 @@ namespace BattletechCoop.Sync
         public bool ThinksHere(AITeam team)
         {
             if (Mode != AutoplayMode.Shared || team.GUID != Player1TeamGuid) return IsHost;
+            // With a combat save, the guest has no battle before the save point; both sides know its
+            // activation (host: when sent, guest: when received), so they agree on this.
+            if (ViaSave && (!(IsHost ? saveSent : guestSave != null) || Activation <= saveActivation)) return IsHost;
             var guestThinks = Activation % 2 == 0;
             return IsHost ? !guestThinks : guestThinks;
         }
@@ -131,9 +148,17 @@ namespace BattletechCoop.Sync
         // ---- combat start ----
 
         // Host, from the LaunchContract prefix: send the contract to every guest before launching locally.
-        public static void BeginAsHost(CoopSession session, Contract contract, AutoplayMode mode)
+        public static void BeginAsHost(CoopSession session, Contract contract, AutoplayMode mode, bool viaSave)
         {
             var combatId = (uint)Environment.TickCount;
+            if (viaSave)
+            {
+                // The guest gets a combat save once the mission has begun here (Update).
+                session.SendGame(ChannelCombatPending, Build(w => { w.Write(combatId); w.Write((byte)mode); }));
+                Current = new CombatSync(session, true, combatId, mode) { ViaSave = true };
+                Log.Info($"SYNC host: combat {combatId} started; the guest gets a combat save once it begins, autoplay={mode}");
+                return;
+            }
             var data = GameSerializer.SerializeContract(contract);
             session.SendGame(ChannelCombatStart, Build(w =>
             {
@@ -169,6 +194,50 @@ namespace BattletechCoop.Sync
             Log.Info($"SYNC guest: launching host's combat {combatId} ({data.Length} bytes), autoplay={mode}");
 
             LanceLoader.PrepareGuestLance(contract, () => ContractLauncher.LaunchFromMenu(contract));
+        }
+
+        private static void BeginPendingAsGuest(CoopSession session, BinaryReader r)
+        {
+            var combatId = r.ReadUInt32();
+            var mode = (AutoplayMode)r.ReadByte();
+            pendingStart = null;
+            Current = new CombatSync(session, false, combatId, mode) { ViaSave = true };
+            Current.ShowNotice("The host is starting a mission; it loads here once it begins on their side");
+        }
+
+        private void ReceiveSave(BinaryReader r)
+        {
+            saveSeq = r.ReadUInt32();
+            saveActivation = r.ReadUInt32();
+            guestSave = r.ReadBytes(r.ReadInt32());
+            // Stream items up to the save are already part of its state.
+            var dropped = 0;
+            while (incoming.Count > 0 && incoming.Peek().Seq <= saveSeq) { incoming.Dequeue(); dropped++; }
+            seq = saveSeq;
+            Log.Info($"SYNC guest: combat save received ({guestSave.Length} bytes) at seq {saveSeq}, activation {saveActivation}; dropped {dropped} earlier items");
+        }
+
+        // Guest: load the host's combat save once we're out of combat (main menu or SimGame).
+        private void TryLoadSave()
+        {
+            if (guestSave == null || saveLoadStarted) return;
+            if (UnityGameInstance.BattleTechGame?.Combat != null) return;
+            saveLoadStarted = true;
+            try
+            {
+                var save = SaveTransfer.Deserialize(guestSave);
+                Log.Info($"SYNC guest: loading the host's combat save (skirmish={save.IsSkirmish})");
+                // LoadTransitioning.Load takes a save slot and reads it from disk; FileReadComplete is
+                // where that read hands over the GameInstanceSave, so the in-memory save takes the
+                // same path from there (combat-restart check, curtain, scene switch, GameInstance.Load).
+                Traverse.Create(LazySingletonBehavior<BattleTech.Save.LoadTransitioning>.Instance)
+                    .Method("FileReadComplete", new object[] { true, save }).GetValue();
+            }
+            catch (Exception e)
+            {
+                Log.Error("SYNC guest: could not load the host's combat save", e);
+                ShowNotice("Could not load the host's mission; see BattletechCoop.log");
+            }
         }
 
         // Guest, every frame while connected and not in a co-op combat: launch a deferred combat,
@@ -212,6 +281,12 @@ namespace BattletechCoop.Sync
                     {
                         case ChannelCombatStart:
                             if (session.Role == SessionRole.Guest) BeginAsGuest(session, payload);
+                            break;
+                        case ChannelCombatPending:
+                            if (session.Role == SessionRole.Guest) BeginPendingAsGuest(session, r);
+                            break;
+                        case ChannelCombatSave:
+                            if (GuestActive && r.ReadUInt32() == Current.CombatId) Current.ReceiveSave(r);
                             break;
                         case ChannelMenuReady:
                             if (session.Role == SessionRole.Host)
@@ -286,6 +361,8 @@ namespace BattletechCoop.Sync
 
         public void OnActivation()
         {
+            if (!IsHost && ViaSave && !saveLoaded) return; // activations replayed while the save loads
+            if (IsHost && Reloading) return;
             Activation++;
             reportedComplete.Clear();
             completeRequested = false;
@@ -334,12 +411,18 @@ namespace BattletechCoop.Sync
         // Called every frame by the controller.
         public void Update()
         {
+            if (!IsHost && ViaSave)
+            {
+                TryLoadSave();
+                if (!saveLoadStarted) return; // any combat still showing is the previous one
+            }
             var combat = UnityGameInstance.BattleTechGame?.Combat;
             if (combat == null) return;
 
             if (!begunLogged && combat.TurnDirector != null && combat.TurnDirector.GameHasBegun)
             {
                 begunLogged = true;
+
                 Log.Info($"SYNC combat begun: {combat.AllActors.Count} actors; {Status}");
             }
 
@@ -351,6 +434,10 @@ namespace BattletechCoop.Sync
 
             if (IsHost)
             {
+                if (Reloading) return;
+                // Only where the game itself would allow a combat save (player team's turn, quiet
+                // stack, no unit half-activated): a state its load path resumes from cleanly.
+                if (ViaSave && !saveSent && IsIdle(combat) && IsSaveMoment(combat)) SendSave();
                 while (requests.Count > 0 && IsIdle(combat))
                     ProcessRequest(combat, requests.Dequeue());
                 return;
@@ -376,6 +463,7 @@ namespace BattletechCoop.Sync
 
         private bool CanApply(CombatGameState combat, Item item)
         {
+            if (ViaSave && !saveLoaded) return false;
             if (!IsIdle(combat)) return false;
             if (item.Activation > Activation) return false;
             if (item.Activation < Activation)
@@ -453,6 +541,83 @@ namespace BattletechCoop.Sync
             {
                 ReportDesync(item.Seq, $"state differs before {item.TypeName} id={invocation.InvocationID}:\n{StateText.Diff(differences)}");
                 if (Desyncs == 1) Log.Info($"SYNC diag: full state at first desync (seq {item.Seq})\n--- host ---\n{item.State}--- guest ---\n{state}");
+            }
+        }
+
+        // Guest: the loaded combat starts playing when its briefing's "Begin mission" is pressed; from
+        // here it continues at the host's activation.
+        public void OnBeginPlaying()
+        {
+            if (IsHost)
+            {
+                if (!Reloading) return;
+                Reloading = false;
+                Activation = saveActivation;
+                Log.Info($"SYNC host: resumed from its own save at seq {seq}, activation {Activation}");
+                return;
+            }
+            if (!ViaSave || saveLoaded || !saveLoadStarted) return;
+            Activation = saveActivation;
+            saveLoaded = true;
+            Log.Info($"SYNC guest: loaded mission resumed at seq {seq}, activation {Activation}");
+        }
+
+        // Where the game itself would allow a combat save: CombatGameState.CanSave. In autoplay
+        // Player 1 is an AITeam, which sits on the sequence stack while acting, so CanSave is never
+        // true; the test uses the same conditions without the stack check.
+        private bool IsSaveMoment(CombatGameState combat)
+        {
+            if (!Autoplay) return combat.CanSave(false);
+            var active = combat.TurnDirector.ActiveTurnActor as Team;
+            if (active == null || active.GUID != Player1TeamGuid || combat.TurnDirector.IsMissionOver) return false;
+            return active.units.All(u => u.IsDead || !u.HasBegunActivation || u.HasActivatedThisRound);
+        }
+
+        // Host: the mission has begun and nothing is running, so every streamed item so far is part
+        // of the state captured now.
+        private void SendSave()
+        {
+            saveSent = true;
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            byte[] bytes;
+            try
+            {
+                bytes = SaveTransfer.Serialize(new BattleTech.Save.GameInstanceSave(UnityGameInstance.BattleTechGame, BattleTech.Save.SaveGameStructure.SaveReason.MANUAL));
+            }
+            catch (Exception e)
+            {
+                Log.Error("SYNC host: could not build the combat save for the guest", e);
+                ShowNotice("Could not send this mission to the guest; see BattletechCoop.log");
+                return;
+            }
+            var atSeq = seq;
+            var atActivation = Activation;
+            saveActivation = atActivation;
+            session.SendGame(ChannelCombatSave, Build(w =>
+            {
+                w.Write(CombatId);
+                w.Write(atSeq);
+                w.Write(atActivation);
+                w.Write(bytes.Length);
+                w.Write(bytes);
+            }));
+            Log.Info($"SYNC host: combat save sent ({bytes.Length} bytes, built in {started.ElapsedMilliseconds} ms) at seq {atSeq}, activation {atActivation}");
+
+            // A loaded combat is not identical to the live one it was saved from: components, for
+            // one, come back in a different order, so a critical hit picked a different component
+            // on the guest (2026-10-17). So the host reloads the very same save and both continue
+            // from it. Until "Begin mission" is pressed again, nothing runs on the host.
+            Reloading = true;
+            try
+            {
+                Traverse.Create(LazySingletonBehavior<BattleTech.Save.LoadTransitioning>.Instance)
+                    .Method("FileReadComplete", new object[] { true, SaveTransfer.Deserialize(bytes) }).GetValue();
+                Log.Info("SYNC host: reloading the same save so both sides run from it");
+            }
+            catch (Exception e)
+            {
+                Reloading = false;
+                Log.Error("SYNC host: could not reload the combat save", e);
             }
         }
 

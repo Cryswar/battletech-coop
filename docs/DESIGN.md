@@ -120,6 +120,72 @@ later, implemented as a host-side filter on the same request path.
   host applies it and streams `AIComplete` as usual. Completion therefore only ever arrives
   through the stream, which keeps the activation gating intact.
 
+#### M2 campaign contracts (Campaign and Career modes)
+
+Findings (build 20387569):
+
+- SimGame contracts launch through the same `GameInstance.LaunchContract`, inside
+  `SimGameState.StartContract` (Accept, loading curtain, launch). Just before that,
+  `SimGameState.OnContractReady` saves with `SIM_GAME_CONTRACT_ACCEPTED`.
+- A sent `Contract` would be a poor basis on the guest. Its `ContractOverride` (objectives,
+  lances) is not serialized ("we populate this later" in MP, which sends the ID separately), and
+  `ContractOverride.GenerateUnits` picks the enemy units while the contract loads.
+- `new GameInstanceSave(game, reason)` captures both the `SimGameSave` and the live
+  `CombatGameState`. `GameInstance.Load(save)` rebuilds the SimGame headless, then calls
+  `CreateCombatFromSave` when the save has combat data (`IsSkirmish` saves go straight to
+  `CreateCombatFromSave`). `LazySingletonBehavior<LoadTransitioning>.Instance.Load(save)` is how
+  the main menu resumes a save. Real saves use `Serializer` with target `SaveGame` (2) and gzip.
+- Saves live in Steam Cloud (`userdata/<id>/637090/remote/C0/SGS1/*.sav`).
+
+Design: **send a combat save, not a contract.** Once a campaign mission has begun on the host and
+the host is idle, the host builds a `GameInstanceSave` in memory (never written to disk),
+serializes and gzips it, and sends it with the current stream `seq` and activation count. The
+guest loads it through `LoadTransitioning`, so the campaign state, contract, spawned units and
+mission scripts come back the way the game itself restores them, with nothing regenerated. It
+then replays stream items with a higher `seq`. Story missions and Flashpoints take the same path,
+and so would rejoining a battle later.
+
+- **Saving is blocked on the guest** whenever it is in a co-op session: the guest is running
+  the host's campaign, and an autosave would put it into the guest's own Steam Cloud slots.
+  `-coop-no-saves` blocks saving in test copies, which share the owner's Steam Cloud saves.
+- Between missions the guest stays in the host's campaign as it was at mission start, unsaved.
+  That is the first, read-only form of the shared ship view; each new mission brings a fresh save.
+- Skirmish keeps the contract path. `-coop-save-transfer` (test) makes skirmish use the
+  combat-save path too, so the two-copy test exercises save, load and resume end to end without
+  touching any campaign save.
+
+Implementation notes and results (2026-10-17):
+
+- **When the save is taken:** only where `CombatGameState.CanSave(false)` holds (local player
+  team's turn, quiet stack, no unit half-activated, not a tutorial, mission not over). A save
+  taken right after "Begin mission", mid round start, made the guest resume at a different phase.
+  In autoplay, Player 1 is an `AITeam`, which sits on the stack, so the test uses the same
+  conditions minus the stack check.
+- **Loading in memory:** `LoadTransitioning.Load` takes a slot and reads it from disk;
+  `LoadTransitioning.FileReadComplete(true, save)` is where that read hands over the
+  `GameInstanceSave`, so the transferred save goes in there. Bytes are
+  `SaveBlock<GameInstanceSave>(SaveGame).ToBlockBytes`, i.e. exactly a save file, about 257 KB.
+- **Resuming:** a loaded combat shows its briefing again, and its state already reads "begun"
+  long before the map is up. The guest resumes when "Begin mission" is pressed
+  (`Briefing.BeginPlaying`); activations counted while loading are ignored and the count is set
+  to the host's at save time.
+- **The host reloads the same save.** A loaded combat differs from the live one it was saved
+  from: components come back in a different order, so a critical hit landed on a different
+  component on the guest (seq 207 with a full-stat comparison). The host therefore sends the
+  save and immediately loads it too; until its own "Begin mission", it drops invocations and its
+  AI doesn't think. Both sides then run identical post-load state. The cost is one ~8 s reload,
+  and the host sees the briefing a second time.
+- **The state check now covers every statistic:** a digest of the unit, pilot and component stat
+  collections, rendered culture-invariant, with components labelled `def@location` and sorted.
+  Lines are matched by unit and section rather than position. `-coop-deep-state` lists the
+  stats in full so a diff names the exact one.
+- Save-transfer full mission with full-stat comparison: **PASS** (176 items, 38 guest orders,
+  24 guest AI completions, 0 desyncs).
+
+Not yet tested: a real Campaign or Career mission (story scripts, Flashpoints, a non-skirmish
+`SimGameState` on both sides), loading while the guest is in the SimGame rather than the main
+menu, Ironman campaigns, and the mission-end and AAR flow back to the ship on the guest.
+
 ### Unit ownership (two lances)
 
 - Everyone stays on the Player1 team. A per-unit owner table (unit GUID → player id) is sent

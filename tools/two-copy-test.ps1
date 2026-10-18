@@ -15,6 +15,10 @@ param(
     # Shared control test: the Player 1 AI alternates between guest and host each activation, so
     # half of Player 1's orders are guest requests. Also requires accepted and zero rejected requests.
     [switch]$Shared,
+    # Send the skirmish to the guest as a combat save, the way campaign missions travel (M2).
+    [switch]$SaveTransfer,
+    # Compare every unit, pilot and component statistic, not just a digest (slower, bigger).
+    [switch]$DeepState,
     [int]$TargetSeq = 60,
     [double]$TimeScale = 3,
     [string]$Map = '',
@@ -50,11 +54,14 @@ foreach ($dir in $HostDir, $GuestDir) {
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
 $hostLog = Get-CoopLog $HostDir
 $guestLog = Get-CoopLog $GuestDir
-$hostArgs = @('-coop-host-tcp', "$Port", '-coop-name', 'HostBot')
-$guestArgs = @('-coop-join-tcp', "127.0.0.1:$Port", '-coop-name', 'GuestBot')
+# -coop-no-saves on both: the test copies share the owner's Steam Cloud saves.
+$hostArgs = @('-coop-host-tcp', "$Port", '-coop-name', 'HostBot', '-coop-no-saves')
+$guestArgs = @('-coop-join-tcp', "127.0.0.1:$Port", '-coop-name', 'GuestBot', '-coop-no-saves')
 if ($Combat) {
     $hostArgs += @($(if ($Shared) { '-coop-autoplay-shared' } else { '-coop-autoplay' }), '-coop-autoskirmish')
     if ($Map) { $hostArgs += $Map }
+    if ($SaveTransfer) { $hostArgs += '-coop-save-transfer' }
+    if ($DeepState) { $hostArgs += '-coop-deep-state'; $guestArgs += '-coop-deep-state' }
     $ts = $TimeScale.ToString([System.Globalization.CultureInfo]::InvariantCulture)
     $hostArgs += @('-coop-timescale', $ts)
     $guestArgs += @('-coop-timescale', $ts)

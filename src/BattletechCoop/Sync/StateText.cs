@@ -34,7 +34,27 @@ namespace BattletechCoop.Sync
             ChassisLocations.LeftArm, ChassisLocations.RightArm, ChassisLocations.LeftLeg, ChassisLocations.RightLeg,
         };
 
+        // -coop-deep-state: also list every statistic (unit, pilot, components) per actor, so a
+        // desync diff names the exact stat. Normally only a digest of them is compared.
+        public static bool Deep;
+
         public static string Render(CombatGameState combat)
+        {
+            // Stat values are formatted with the current culture; players' PCs may differ.
+            var thread = System.Threading.Thread.CurrentThread;
+            var previous = thread.CurrentCulture;
+            thread.CurrentCulture = CultureInfo.InvariantCulture;
+            try
+            {
+                return RenderInvariant(combat);
+            }
+            finally
+            {
+                thread.CurrentCulture = previous;
+            }
+        }
+
+        private static string RenderInvariant(CombatGameState combat)
         {
             var c = CultureInfo.InvariantCulture;
             var sb = new StringBuilder(2048);
@@ -72,9 +92,58 @@ namespace BattletechCoop.Sync
                     foreach (var loc in StructureLocations)
                         sb.Append(Math.Round(mech.GetCurrentStructure(loc)).ToString(c)).Append(':');
                 }
+                // Status effects, modifiers, pilot state and weapon/ammo state all live in stat
+                // collections; a desync after loading a save showed in attack results that the
+                // fields above didn't explain (2026-10-17).
+                var stats = ActorStats(actor);
+                sb.Append(" stats=").Append(Fnv(string.Join("\n", stats.Select(x => x.Key + ":" + x.Value).ToArray())).ToString("x8"));
                 sb.Append('\n');
+                if (Deep)
+                    foreach (var part in stats)
+                        sb.Append(actor.GUID).Append(' ').Append(part.Key).Append(' ').Append(part.Value).Append('\n');
             }
             return sb.ToString();
+        }
+
+        // (label, "name=value;..." sorted by name) for the actor, its pilot and each component.
+        private static List<KeyValuePair<string, string>> ActorStats(AbstractActor actor)
+        {
+            var result = new List<KeyValuePair<string, string>>();
+            result.Add(new KeyValuePair<string, string>("S", StatsText(actor.StatCollection)));
+            var pilot = actor.GetPilot();
+            if (pilot != null) result.Add(new KeyValuePair<string, string>("P", StatsText(pilot.StatCollection)));
+            // Components come back in a different order after a save is loaded, and ammo boxes have
+            // no uid: label them by definition and mount location and sort, so order doesn't matter.
+            var components = Traverse.Create(actor).Field("allComponents").GetValue() as IEnumerable;
+            var parts = new List<KeyValuePair<string, string>>();
+            if (components != null)
+                foreach (var item in components)
+                {
+                    var component = item as MechComponent;
+                    if (component != null)
+                        parts.Add(new KeyValuePair<string, string>("C:" + component.defId + "@" + component.Location, StatsText(component.StatCollection)));
+                }
+            result.AddRange(parts.OrderBy(x => x.Key, StringComparer.Ordinal).ThenBy(x => x.Value, StringComparer.Ordinal));
+            return result;
+        }
+
+        private static string StatsText(StatCollection collection)
+        {
+            if (collection == null) return "";
+            var sb = new StringBuilder();
+            foreach (var name in collection.Items.OrderBy(n => n, StringComparer.Ordinal))
+            {
+                var stat = collection.GetStatistic(name);
+                sb.Append(name).Append('=').Append(stat?.CurrentValue?.ToString() ?? "null").Append(';');
+            }
+            return sb.ToString();
+        }
+
+        private static uint Fnv(string text)
+        {
+            var hash = 2166136261u;
+            foreach (var ch in text) { hash ^= ch; hash *= 16777619u; }
+            return hash;
         }
 
         private static string Cm(float metres) =>
@@ -109,20 +178,43 @@ namespace BattletechCoop.Sync
 
         private static bool IsBusy(string line) => line.EndsWith(" busy", StringComparison.Ordinal);
 
-        // Lines that differ, ignoring units busy on either side.
+        // Lines that differ, ignoring units busy on either side. Lines are matched by unit and section
+        // (header, unit line, "S"/"P"/"C:<def>@<location>" stat lines), not by position: a unit
+        // that is busy on one side has a single line there and many on the other.
         public static List<KeyValuePair<string, string>> Differences(string host, string guest)
         {
-            var a = host.Split('\n');
-            var b = guest.Split('\n');
+            var busy = new HashSet<string>();
+            var a = Index(host, busy);
+            var b = Index(guest, busy);
             var result = new List<KeyValuePair<string, string>>();
-            for (var i = 0; i < Math.Max(a.Length, b.Length); i++)
+            foreach (var key in a.Keys.Union(b.Keys).OrderBy(k => k, StringComparer.Ordinal))
             {
-                var x = i < a.Length ? a[i] : "<missing>";
-                var y = i < b.Length ? b[i] : "<missing>";
-                if (x == y || IsBusy(x) || IsBusy(y)) continue;
-                result.Add(new KeyValuePair<string, string>(x, y));
+                if (busy.Contains(key.Split(' ')[0])) continue;
+                List<string> x, y;
+                var hostText = a.TryGetValue(key, out x) ? string.Join(" | ", x.ToArray()) : "<missing>";
+                var guestText = b.TryGetValue(key, out y) ? string.Join(" | ", y.ToArray()) : "<missing>";
+                if (hostText != guestText) result.Add(new KeyValuePair<string, string>(hostText, guestText));
             }
             return result;
+        }
+
+        private static Dictionary<string, List<string>> Index(string text, HashSet<string> busy)
+        {
+            var index = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+            foreach (var line in text.Split('\n'))
+            {
+                if (line.Length == 0) continue;
+                var tokens = line.Split(' ');
+                if (IsBusy(line)) { busy.Add(tokens[0]); continue; }
+                var key = tokens[0];
+                if (tokens.Length > 1 && (tokens[1] == "S" || tokens[1] == "P" || tokens[1].StartsWith("C:", StringComparison.Ordinal)))
+                    key += " " + tokens[1];
+                List<string> lines;
+                if (!index.TryGetValue(key, out lines)) index[key] = lines = new List<string>();
+                lines.Add(line);
+            }
+            foreach (var lines in index.Values) lines.Sort(StringComparer.Ordinal);
+            return index;
         }
 
         public static string Diff(List<KeyValuePair<string, string>> differences, int maxLines = 6)
