@@ -260,7 +260,8 @@ menu, Ironman campaigns, and the mission-end and AAR flow back to the ship on th
 - **Open screens are redrawn (0.0.10)** after a change from the other side: the Mech Bay with
   `MechBayPanel.RefreshData` and the same bay slot selected again, the Barracks with
   `SGBarracksWidget.Reset` on the pilot being shown. Only screens that are `Visible`; it waits
-  while the MechLab is open or the shown pilot has unconfirmed training.
+  while the MechLab is open or the shown pilot has unconfirmed training
+  (`SGBarracksWidget.IsCurPilotModified`; 0.0.11).
 - **Refresh (0.0.10):** the button is disabled while a ship is loading; notices say "Asking the
   host...", "Loading the host's ship...", "Ship updated from the host", or after 30 s that the
   host sends its ship only once it is on the ship screen. The host answers a refresh at once
@@ -494,6 +495,14 @@ the first, and combat saves/loads.
   errors. The first run caught the redraw touching a Mech Bay panel that was in the scene but
   never opened; it now redraws only `Visible` screens. The redraw itself with a screen open is
   only tested by hand.
+- **2026-10-18, human test of 0.0.10:** 'Mech renames redrew at once for the other player, but
+  Barracks changes showed only after leaving and re-entering. Cause: the "unconfirmed training"
+  check compared the detail panel's `tempPilot` with `curPilot`, but `SetPilot` leaves
+  `tempPilot` null until something is edited, so it always waited, and while the Barracks was
+  open it also held up every other redraw. 0.0.11 uses the game's own `IsCurPilotModified`. The
+  host side of `-ShipRequests` now opens the Barracks first (as `MemorialWallShortcut` does,
+  with the personnel menu: queue menu 2, `ForceShipRoomChangeOfRoom(4)`) and the test requires
+  a Barracks redraw on the host: **PASS** (redrawn for each of the guest's pilot changes).
 
 ## Open questions
 

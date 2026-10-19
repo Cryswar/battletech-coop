@@ -269,27 +269,22 @@ namespace BattletechCoop.Sync
         }
 
         // After a change from the other side, redraw the Mech Bay or Barracks if open, as the game
-        // does after its own changes. Waits while the MechLab is open or a pilot has unconfirmed
-        // training, so nothing the player is editing is thrown away.
-        // The screens stay in the scene after first use; Visible says whether one is up.
-        private static bool IsOpen(UIModule module) => module != null && module.gameObject.activeInHierarchy && module.Visible;
-
+        // does after its own changes. Waits while the MechLab is open or the shown pilot has
+        // unconfirmed training (SGBarracksWidget.IsCurPilotModified), so nothing the player is
+        // editing is thrown away.
         private static void RedrawScreens()
         {
+            // The screens stay in the scene after first use; Visible says whether one is up.
+            bool IsOpen(UIModule module) => module != null && module.gameObject.activeInHierarchy && module.Visible;
+
             try
             {
                 var sim = UnityGameInstance.BattleTechGame?.Simulation;
                 if (sim == null) { screensDirty = false; return; }
-                var mechLab = UnityEngine.Object.FindObjectOfType<MechLabPanel>();
-                if (IsOpen(mechLab)) return;
-                var detail = UnityEngine.Object.FindObjectOfType<SGBarracksMWDetailPanel>();
-                Pilot shown = null;
-                if (IsOpen(detail))
-                {
-                    var t = Traverse.Create(detail);
-                    shown = t.Field("curPilot").GetValue<Pilot>();
-                    if (!ReferenceEquals(shown, t.Field("tempPilot").GetValue<Pilot>())) return;
-                }
+                if (IsOpen(UnityEngine.Object.FindObjectOfType<MechLabPanel>())) return;
+                var barracks = UnityEngine.Object.FindObjectOfType<SGBarracksWidget>();
+                var barracksOpen = IsOpen(barracks);
+                if (barracksOpen && barracks.IsCurPilotModified()) return;
                 screensDirty = false;
 
                 var bay = UnityEngine.Object.FindObjectOfType<MechBayPanel>();
@@ -302,12 +297,15 @@ namespace BattletechCoop.Sync
                     var slot = t.Field("selectedBaySlot").GetValue();
                     var unit = group == null ? null : Traverse.Create(group).Method("GetMechUnitForSlot", slot).GetValue();
                     if (unit != null) t.Method("SelectMech", unit, true).GetValue();
+                    Log.Info("SHIP: redrew the Mech Bay");
                 }
-                var barracks = UnityEngine.Object.FindObjectOfType<SGBarracksWidget>();
-                if (IsOpen(barracks))
+                if (barracksOpen)
                 {
-                    var pilot = shown == null ? null : FindPilot(sim, shown.GUID);
-                    barracks.Reset(pilot ?? sim.Commander);
+                    // UpgradePilot replaces the pilot object, so look the shown pilot up again.
+                    var shown = Traverse.Create(barracks).Field("selectedPilot").GetValue<Pilot>();
+                    var pilot = (shown == null ? null : FindPilot(sim, shown.GUID)) ?? sim.Commander;
+                    barracks.Reset(pilot);
+                    Log.Info($"SHIP: redrew the Barracks (showing '{pilot?.Callsign}')");
                 }
             }
             catch (Exception e)

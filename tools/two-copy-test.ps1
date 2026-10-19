@@ -118,10 +118,12 @@ try {
         $gp2 = @($g | Where-Object { $_ -match 'SHIP guest: pilot now (.*)$' }) | Select-Object -Last 1
         $hps2 = if ($hp2 -match 'host pilot now (.*)$') { $Matches[1] } else { '' }
         $gps2 = if ($gp2 -match 'guest: pilot now (.*)$') { $Matches[1] } else { '' }
-        $passed = $done -and $replies.Count -ge 3 -and $refused.Count -eq 0 -and $errors.Count -eq 0 -and $a -and ($a -eq $b) -and $gps -and ($gps -eq $hps) -and
+        $redrew = @($h | Where-Object { $_ -match 'SHIP: redrew the Barracks' }).Count
+        $passed = $redrew -gt 0 -and $done -and $replies.Count -ge 3 -and $refused.Count -eq 0 -and $errors.Count -eq 0 -and $a -and ($a -eq $b) -and $gps -and ($gps -eq $hps) -and
             $updates.Count -ge 3 -and $failedUpdates.Count -eq 0 -and $c -and ($c -eq $e) -and $hps2 -and ($hps2 -eq $gps2)
         $reason = "guest->host: replies $($replies.Count) (refused $($refused.Count)); refit guest [$a] host [$b]; pilot guest [$gps] host [$hps]. " +
-            "host->guest: updates $($updates.Count) (failed $($failedUpdates.Count)); refit host [$c] guest [$e]; pilot host [$hps2] guest [$gps2]. errors $($errors.Count)"
+            "host->guest: updates $($updates.Count) (failed $($failedUpdates.Count)); refit host [$c] guest [$e]; pilot host [$hps2] guest [$gps2]. " +
+            "host Barracks redraws $redrew. errors $($errors.Count)"
         if ($failedUpdates.Count -gt 0) { $reason += "; first failed update: $($failedUpdates[0])" }
         if ($refused.Count -gt 0) { $reason += "; first refusal: $($refused[0])" }
         if ($errors.Count -gt 0) { $reason += "; first error: $($errors[0])" }

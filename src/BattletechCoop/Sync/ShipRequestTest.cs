@@ -15,6 +15,7 @@ namespace BattletechCoop.Sync
     {
         public static bool Enabled;
         private static bool done;
+        private static bool barracksOpened;
 
         public static void Update()
         {
@@ -23,6 +24,19 @@ namespace BattletechCoop.Sync
             if (session == null) return;
             var host = session.Role == SessionRole.Host;
             var since = host ? ShipView.SentAt : ShipView.ShowingSince;
+            // The host opens the Barracks first, so the guest's pilot changes must redraw it.
+            if (host && !barracksOpened && since >= 0 && Time.realtimeSinceStartup >= since + 1f)
+            {
+                barracksOpened = true;
+                var rooms = UnityGameInstance.BattleTechGame?.Simulation?.RoomManager;
+                if (rooms != null)
+                {
+                    // As SimGameState.MemorialWallShortcut, with the personnel menu (2) instead.
+                    rooms.SetQueuedUIActivationID((DropshipMenuType)2, (DropshipLocation)0, false);
+                    rooms.ForceShipRoomChangeOfRoom((DropshipLocation)4);
+                    Log.Info("SHIP test: host opened the Barracks");
+                }
+            }
             if (since < 0 || Time.realtimeSinceStartup < since + (host ? 3f : 5f)) return;
             done = true;
             var sim = UnityGameInstance.BattleTechGame?.Simulation;
