@@ -1,6 +1,7 @@
 using System.Linq;
 using BattleTech;
 using BattletechCoop.Net;
+using Harmony;
 using UnityEngine;
 
 namespace BattletechCoop.Sync
@@ -92,6 +93,92 @@ namespace BattletechCoop.Sync
             d.SetName(d.Callsign);
             ShipRequests.CapturePilotNames(pilot);
             Log.Info($"SHIP test: {(host ? "host" : "guest")} pilot now " + ShipRequests.PilotSummary(pilot));
+
+            try { RunCompany(sim, host, mechs); }
+            catch (System.Exception e) { Log.Error("SHIP test: company changes failed", e); }
+            ShipRequests.LogDigest("after its own test changes");
+        }
+
+        // 0.0.12: hiring, Store, storing a 'Mech, dismissing, cancelling a work order, heraldry. The
+        // guest dismisses the pilot the host hired and cancels the host's refit, which only works
+        // if both copies gave them the same IDs.
+        private static void RunCompany(SimGameState sim, bool host, System.Collections.Generic.List<MechDef> mechs)
+        {
+            var who = host ? "host" : "guest";
+            var system = sim.CurSystem;
+
+            if (host && mechs.Count >= 3)
+            {
+                var store = mechs[1];
+                var slot = sim.ActiveMechs.First(kv => kv.Value == store).Key;
+                sim.UnreadyMech(slot, store);
+                Log.Info($"SHIP test: host stored '{store.Name}'");
+            }
+
+            var forHire = system.AvailablePilots.ToList();
+            if (forHire.Count >= 2)
+            {
+                var def = host ? forHire.Last() : forHire.First();
+                system.HirePilot(def);
+                var hired = sim.PilotRoster.FirstOrDefault(p => p.pilotDef.Description.Id == def.Description.Id);
+                Log.Info($"SHIP test: {who} hired '{def.Description.Callsign}' as {hired?.GUID}");
+                if (host && hired != null)
+                {
+                    hired.pilotDef.Description.SetCallsign(hired.Callsign + "HIRE");
+                    hired.pilotDef.Description.SetName(hired.Callsign);
+                    ShipRequests.CapturePilotNames(hired);
+                }
+            }
+            else Log.Info("SHIP test: fewer than two pilots for hire; not hiring");
+
+            var shop = system.SystemShop;
+            var items = shop?.ActiveInventory?.Where(i => i.Type == ShopItemType.Weapon).ToList();
+            if (items != null && items.Count > 0)
+            {
+                var item = host ? items.Last() : items.First();
+                var bought = shop.Purchase(item.ID, item.IsInfinite ? Shop.PurchaseType.Normal : Shop.PurchaseType.Special, item.Type);
+                Log.Info($"SHIP test: {who} bought {item.ID}: {bought}");
+                if (bought)
+                {
+                    var sell = new ShopDefItem();
+                    sell.ID = item.ID;
+                    sell.Type = item.Type;
+                    sell.SellCost = 1000;
+                    Log.Info($"SHIP test: {who} sold {item.ID}: {shop.SellInventoryItem(sell)}");
+                }
+            }
+            else Log.Info("SHIP test: no weapons in the system store");
+
+            if (host) return;
+            var hostHired = sim.PilotRoster.FirstOrDefault(p => p.Callsign.EndsWith("HIRE"));
+            if (hostHired != null)
+            {
+                Log.Info($"SHIP test: guest dismisses the host's hire '{hostHired.Callsign}' {hostHired.GUID}");
+                sim.DismissPilot(hostHired);
+            }
+            else Log.Info("SHIP test: no host hire to dismiss");
+
+            // Ready a stored 'Mech (the host stored one above), then cancel that order: readying
+            // makes the new 'Mech's ID, and the cancel finds the order by it on the host.
+            var stored = sim.CompanyStats.Items.FirstOrDefault(n => n.StartsWith("Item.MechDef.")
+                && sim.CompanyStats.GetValue<int>(n) > 0);
+            var freeSlot = Enumerable.Range(0, 18).Where(i => !sim.ActiveMechs.ContainsKey(i) && !sim.ReadyingMechs.ContainsKey(i))
+                .DefaultIfEmpty(-1).First();
+            if (stored != null && freeSlot >= 0)
+            {
+                var chassis = stored.Substring("Item.MechDef.".Length);
+                sim.ReadyMech(freeSlot, chassis);
+                var order = sim.MechLabQueue.OfType<WorkOrderEntry_ReadyMech>().LastOrDefault();
+                Log.Info($"SHIP test: guest readies {chassis} in bay {freeSlot} as {order?.MechID}");
+                if (order != null) sim.CancelWorkOrder(order, true);
+            }
+            else Log.Info($"SHIP test: nothing to ready (stored {stored}, free bay {freeSlot})");
+
+            var heraldry = sim.Player1sMercUnitHeraldryDef.Copy();
+            heraldry.Description.SetName(heraldry.Description.Name + " CO");
+            var room = Traverse.Create(sim.RoomManager).Field("CptQuartersRoom").GetValue();
+            Traverse.Create(room).Method("OnHeraldryClosed", heraldry).GetValue();
+            Log.Info($"SHIP test: guest renamed the company to '{sim.CompanyName}'");
         }
     }
 }

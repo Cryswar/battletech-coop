@@ -22,7 +22,7 @@ namespace BattletechCoop.Sync
     // Refits are sent as their work orders (install/remove, armor, structure, component repair),
     // not as objects: parts the guest took from storage get new IDs on the guest, and the host's
     // game finds those parts in its own storage by part type.
-    public static class ShipRequests
+    public static partial class ShipRequests
     {
         public const ushort ChannelRequest = 21;
         public const ushort ChannelReply = 22;
@@ -43,7 +43,7 @@ namespace BattletechCoop.Sync
 
         // A change made here goes out when on the ship in a session: the guest asks the host (only
         // while showing the host's ship), the host tells its guests.
-        private static CoopSession CaptureSession()
+        internal static CoopSession CaptureSession()
         {
             if (applyingRemote) return null;
             var session = CoopController.Instance?.Session;
@@ -54,9 +54,12 @@ namespace BattletechCoop.Sync
             return session.Players.Any(p => p.Index != 0) ? session : null;
         }
 
-        private static void Send(CoopSession session, byte kind, string what, Action<BinaryWriter> body)
+        // Every change carries the ID counter its side started from (see UidStart), so a change
+        // that creates a pilot or 'Mech gives it the same ID on every copy.
+        internal static void Send(CoopSession session, byte kind, string what, Action<BinaryWriter> body, uint? uidStart = null)
         {
-            var payload = Build(w => { w.Write(kind); w.Write(what); body(w); });
+            var uid = uidStart ?? UidCount(UnityGameInstance.BattleTechGame.Simulation);
+            var payload = Build(w => { w.Write(kind); w.Write(what); w.Write(uid); body(w); });
             if (session.Role == SessionRole.Guest)
             {
                 session.SendGame(ChannelRequest, payload);
@@ -227,11 +230,20 @@ namespace BattletechCoop.Sync
 
         private static string ApplyRemote(byte kind, BinaryReader r, string what)
         {
+            var uidStart = r.ReadUInt32();
+            var sim = UnityGameInstance.BattleTechGame?.Simulation;
+            var ownUid = sim == null ? 0u : UidCount(sim);
             applyingRemote = true;
             try
             {
+                // IDs made while applying come from the originator's counter; ours is restored after.
+                if (sim != null) SetUidCount(sim, uidStart);
                 var result = Apply(kind, r);
-                if (result == null) screensDirty = true;
+                if (result == null)
+                {
+                    screensDirty = true;
+                    LogDigest("after " + what);
+                }
                 return result;
             }
             catch (Exception e)
@@ -242,6 +254,7 @@ namespace BattletechCoop.Sync
             finally
             {
                 applyingRemote = false;
+                if (sim != null) SetUidCount(sim, ownUid);
             }
         }
 
@@ -259,6 +272,7 @@ namespace BattletechCoop.Sync
 
         public static void Update()
         {
+            ClearCaptureDepth();
             if (queuedUpdates.Count > 0 && ShipView.Ready)
             {
                 var updates = queuedUpdates.ToArray();
@@ -307,6 +321,31 @@ namespace BattletechCoop.Sync
                     barracks.Reset(pilot);
                     Log.Info($"SHIP: redrew the Barracks (showing '{pilot?.Callsign}')");
                 }
+                var hiring = UnityEngine.Object.FindObjectOfType<SG_HiringHall_Screen>();
+                if (IsOpen(hiring))
+                {
+                    // AddPeople clears and refills the list from the system's pilots for hire.
+                    var t = Traverse.Create(hiring);
+                    t.Method("AddPeople").GetValue();
+                    t.Method("UpdateMoneySpot").GetValue();
+                    Log.Info("SHIP: redrew the Hiring Hall");
+                }
+                var shop = UnityEngine.Object.FindObjectOfType<SG_Shop_Screen>();
+                if (IsOpen(shop))
+                {
+                    // As switching tabs: refill the buy list of the current store, or the sell list.
+                    var t = Traverse.Create(shop);
+                    if (t.Field("isInBuyingState").GetValue<bool>())
+                    {
+                        var storeType = Convert.ToInt32(t.Field("currentStoreType").GetValue());
+                        var system = sim.CurSystem;
+                        var current = storeType == 0 ? system?.SystemShop : storeType == 1 ? system?.FactionShop : system?.BlackMarketShop;
+                        if (current != null) shop.ChangeToBuy(current, true);
+                    }
+                    else shop.ChangeToSell();
+                    t.Method("UpdateMoneySpot").GetValue();
+                    Log.Info("SHIP: redrew the Store");
+                }
             }
             catch (Exception e)
             {
@@ -328,7 +367,7 @@ namespace BattletechCoop.Sync
                 case KindRefit: return ApplyRefit(sim, r.ReadBytes(r.ReadInt32()));
                 case KindPilotSkills: return ApplyPilotSkills(sim, r);
                 case KindPilotNames: return ApplyPilotNames(sim, r);
-                default: return $"unknown request {kind} (are both players on the same mod version?)";
+                default: return ApplyMore(sim, kind, r);
             }
         }
 
@@ -451,7 +490,7 @@ namespace BattletechCoop.Sync
             return component;
         }
 
-        private static Pilot FindPilot(SimGameState sim, string guid) =>
+        internal static Pilot FindPilot(SimGameState sim, string guid) =>
             sim.PilotRoster.FirstOrDefault(p => p.GUID == guid) ?? (sim.Commander?.GUID == guid ? sim.Commander : null);
 
         private static string ApplyPilotSkills(SimGameState sim, BinaryReader r)

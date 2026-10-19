@@ -124,6 +124,7 @@ namespace BattletechCoop.Sync
                 {
                     awaitingLoaded = false;
                     ShowingSince = UnityEngine.Time.realtimeSinceStartup;
+                    ShipRequests.UseGuestUidRange(sim, CoopController.Instance?.Session?.LocalIndex ?? 1);
                     Log.Info("SHIP guest: now showing " + Summary(current.Simulation));
                     if (Refreshing) ShipRequests.ShowNotice("Ship updated from the host", 5f);
                     Refreshing = false;

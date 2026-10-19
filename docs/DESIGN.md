@@ -267,12 +267,34 @@ menu, Ironman campaigns, and the mission-end and AAR flow back to the ship on th
   host sends its ship only once it is on the ship screen. The host answers a refresh at once
   instead of waiting out the 10 s throttle. A full reload still takes 15-20 s, nearly all of it
   the game's own loading.
+- **The rest of the ship (0.0.12)**, same pattern, captured where the screens call the game:
+  - *Hiring Hall:* `StarSystem.HirePilot`, the pilot found by its def ID among the system's
+    pilots for hire.
+  - *Store:* `Shop.Purchase` and `Shop.SellInventoryItem(ShopDefItem)` (sent only when they
+    succeed), the store found by type (system, faction, black market) in the current system.
+  - *Mech Bay:* `ReadyMech`, `UnreadyMech`, `ScrapActiveMech`, `ScrapInactiveMech`, and
+    `CancelWorkOrder` (the order found by 'Mech ID and order kind, since work-order IDs differ).
+  - *Barracks:* `DismissPilot`.
+  - *Customize Company:* `SGRoomController_CptQuarters.OnHeraldryClosed`; the heraldry is sent
+    as JSON and applied as there (header name, crest, 'Mech colors).
+  - Several of these call each other (`ReadyMech` uses up the stored 'Mech through
+    `ScrapInactiveMech`; cancelling a readying order calls `UnreadyMech`), so only the outermost
+    call is sent. `ReadyMech` and `ScrapInactiveMech` rewrite their `id` argument before
+    returning, so arguments are taken in the prefix.
+- **Same IDs everywhere (0.0.12).** New pilots and 'Mechs get IDs from a counter
+  (`GenerateSimGameUID` = `"SGRef_" + ++UIDCount`), and each copy counting on its own would give
+  the same thing different IDs, so a later change to it would miss. Each change now carries the
+  counter its side started from, and the other side applies it from that counter (then restores
+  its own). A guest counts in its own range, 1e9 x player index above the host, so IDs made on
+  different copies never collide.
+- Open Store and Hiring Hall screens are redrawn too (the buy or sell list of the current store;
+  the list of pilots for hire), and the company header after a heraldry change.
 - Control is shared, as in combat: either player may refit any 'Mech or train any pilot. Owners
   (a company tag per 'Mech, e.g. `coop.owner=<steamid>`) can come later as an option.
-- Not covered yet: buying and selling, hiring, cancelling a work order, readying or storing a
-  'Mech, pilot portraits, refits of a 'Mech whose host refit is still in progress, and time
-  passing. For those the guest's copy goes stale until the next full ship (mission end, joining,
-  or "Refresh the host's ship").
+- Not covered yet: pilot portraits, refits of a 'Mech whose host refit is still in progress,
+  and time passing, travel or contracts started on the guest (those belong to the host; the
+  guest's copy goes stale until the next full ship: mission end, joining, or "Refresh the host's
+  ship").
 - Story events and dialogue: shown on all machines, and the host picks. A vote option can
   come later.
 
@@ -503,6 +525,16 @@ the first, and combat saves/loads.
   host side of `-ShipRequests` now opens the Barracks first (as `MemorialWallShortcut` does,
   with the personnel menu: queue menu 2, `ForceShipRoomChangeOfRoom(4)`) and the test requires
   a Barracks redraw on the host: **PASS** (redrawn for each of the guest's pilot changes).
+- 0.0.12 `-ShipRequests` adds, on top: the host stores a 'Mech, hires a pilot and renames them,
+  buys and sells a weapon; the guest hires a different pilot, buys and sells, dismisses the
+  pilot the host hired (found by the host's ID), readies the 'Mech the host stored and cancels
+  that order (the new 'Mech's ID must match for the cancel to find it), and renames the company.
+  Both sides log a digest (company, funds, pilots, bays, work orders, storage counts, pilots for
+  hire) after every applied change; the host's last must equal the guest's final one.
+  **PASS**: 9 requests and 9 updates, none refused; the readied 'Mech is `SGRef_1000006363` on
+  both; digests equal. The previous run caught `ReadyMech` rewriting its argument: the host got
+  the storage stat ID, readied nothing, and refused the cancel. Store and Hiring Hall redraws
+  are only tested by hand.
 
 ## Open questions
 

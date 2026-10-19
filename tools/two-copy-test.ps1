@@ -95,7 +95,33 @@ try {
         $end = (Get-Date).AddSeconds(20)
         while ((Get-Date) -lt $end -and (@(Read-Log $guestLog | Where-Object { $_ -match 'SHIP guest: host (applied|refused)' }).Count -lt 4 -or
                 @(Read-Log $guestLog | Where-Object { $_ -match "SHIP guest: (applied|could not apply) the host's change" }).Count -lt 4)) { Start-Sleep -Milliseconds 500 }
+        # The final states must agree: the host's last digest (after the guest's last request)
+        # against the guest's digest after its own test changes.
+        $end = (Get-Date).AddSeconds(30)
+        $hostDigest = ''; $guestDigest = ''
+        while ((Get-Date) -lt $end) {
+            $gd = @(Read-Log $guestLog | Where-Object { $_ -match 'SHIP digest guest after its own test changes: (\S+)' }) | Select-Object -Last 1
+            $hd = @(Read-Log $hostLog | Where-Object { $_ -match 'SHIP digest host .*: (\S+) \(' }) | Select-Object -Last 1
+            $guestDigest = if ($gd -match ': (\S+) \(') { $Matches[1] } else { '' }
+            $hostDigest = if ($hd -match ': (\S+) \(') { $Matches[1] } else { '' }
+            if ($guestDigest -and $guestDigest -eq $hostDigest) { break }
+            Start-Sleep -Milliseconds 500
+        }
         $h = Read-Log $hostLog; $g = Read-Log $guestLog
+        if ($guestDigest -ne $hostDigest) {
+            # Lines of each side's last digest, then the differences.
+            function Last-DigestLines($lines, $marker) {
+                $start = -1
+                for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $marker) { $start = $i } }
+                if ($start -lt 0) { return @() }
+                $out = @()
+                for ($i = $start + 1; $i -lt $lines.Count -and $lines[$i] -match 'SHIP digest line: (.*)$'; $i++) { $out += $Matches[1] }
+                return $out
+            }
+            $hl = Last-DigestLines $h 'SHIP digest host '
+            $gl = Last-DigestLines $g 'SHIP digest guest after its own test changes'
+            Compare-Object $hl $gl | ForEach-Object { Write-Host "DIGEST $(if ($_.SideIndicator -eq '<=') { 'host ' } else { 'guest' }): $($_.InputObject)" }
+        }
         $replies = @($g | Where-Object { $_ -match 'SHIP guest: host (applied|refused)' })
         $refused = @($replies | Where-Object { $_ -match 'refused' })
         $errors = @($h + $g | Where-Object { $_ -cmatch '\[ERROR\]' })
@@ -115,15 +141,16 @@ try {
         $c = if ($toldRefit -match "refit '(.*)' \((.*)\)$") { "$($Matches[1]) $($Matches[2])" } else { '' }
         $e = if ($gotRefit -match "queued refit '(.*)' \((.*)\), funds") { "$($Matches[1]) $($Matches[2])" } else { '' }
         $hp2 = @($h | Where-Object { $_ -match 'SHIP test: host pilot now (.*)$' }) | Select-Object -Last 1
-        $gp2 = @($g | Where-Object { $_ -match 'SHIP guest: pilot now (.*)$' }) | Select-Object -Last 1
         $hps2 = if ($hp2 -match 'host pilot now (.*)$') { $Matches[1] } else { '' }
+        # The host's test pilot; later lines may be other pilots (the host also renames its hire).
+        $gp2 = @($g | Where-Object { $_ -match 'SHIP guest: pilot now (.*)$' -and $Matches[1] -eq $hps2 }) | Select-Object -Last 1
         $gps2 = if ($gp2 -match 'guest: pilot now (.*)$') { $Matches[1] } else { '' }
         $redrew = @($h | Where-Object { $_ -match 'SHIP: redrew the Barracks' }).Count
-        $passed = $redrew -gt 0 -and $done -and $replies.Count -ge 3 -and $refused.Count -eq 0 -and $errors.Count -eq 0 -and $a -and ($a -eq $b) -and $gps -and ($gps -eq $hps) -and
+        $passed = $guestDigest -and ($guestDigest -eq $hostDigest) -and $redrew -gt 0 -and $done -and $replies.Count -ge 3 -and $refused.Count -eq 0 -and $errors.Count -eq 0 -and $a -and ($a -eq $b) -and $gps -and ($gps -eq $hps) -and
             $updates.Count -ge 3 -and $failedUpdates.Count -eq 0 -and $c -and ($c -eq $e) -and $hps2 -and ($hps2 -eq $gps2)
         $reason = "guest->host: replies $($replies.Count) (refused $($refused.Count)); refit guest [$a] host [$b]; pilot guest [$gps] host [$hps]. " +
             "host->guest: updates $($updates.Count) (failed $($failedUpdates.Count)); refit host [$c] guest [$e]; pilot host [$hps2] guest [$gps2]. " +
-            "host Barracks redraws $redrew. errors $($errors.Count)"
+            "host Barracks redraws $redrew. digest host [$hostDigest] guest [$guestDigest]. errors $($errors.Count)"
         if ($failedUpdates.Count -gt 0) { $reason += "; first failed update: $($failedUpdates[0])" }
         if ($refused.Count -gt 0) { $reason += "; first refusal: $($refused[0])" }
         if ($errors.Count -gt 0) { $reason += "; first error: $($errors[0])" }

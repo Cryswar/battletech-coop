@@ -1,7 +1,7 @@
 {
   "Name": "BattletechCoop",
   "Enabled": true,
-  "Version": "0.0.11",
+  "Version": "0.0.12",
   "Description": "Co-op single-player campaign over Steam (pre-alpha).",
   "Author": "BattletechCoop contributors",
   "DLL": "BattletechCoop.dll",
