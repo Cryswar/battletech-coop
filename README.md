@@ -1,12 +1,40 @@
 # BattleTech Co-op
 
-A mod that lets 2+ players play the BattleTech (2018) single-player campaign together over
-Steam. The host owns the campaign save. Each player commands their own lance in missions.
-Between missions, each player can refit their own mechs and pilots.
+> **Work in progress. Not finished, expect bugs.** This is a pre-alpha mod developed and
+> tested by two players. Back up your saves, and expect breaking changes between versions.
 
-Status: **pre-alpha.** Co-op skirmish with shared control works in automated tests. Campaign
-co-op is not done yet. See [docs/DESIGN.md](docs/DESIGN.md) for the
-architecture and milestones.
+A mod that lets 2+ players play the BattleTech (2018) single-player campaign together over
+Steam. The host owns the campaign; friends join it.
+
+## Status (0.0.12)
+
+Works, tested by hand over Steam and by automated two-copy tests:
+
+- **Missions:** co-op skirmish, Campaign and Career missions. Lockstep on the game's own
+  orders with desync detection; every player can command every 'Mech of the player lance
+  (shared control).
+- **Ship between missions:** friends see the host's company and can refit, repair, rename,
+  ready, store and scrap 'Mechs, train, rename, hire and dismiss pilots, buy and sell in the
+  Store, cancel work orders and customize the company. The host's game applies those changes,
+  and the host's own changes reach the friends without a reload.
+- Sessions end cleanly; a friend whose host leaves returns to the main menu.
+
+Not done yet:
+
+- Friends miss the conversation at the start of a mission.
+- Each player having their own lance (ownership), and drops larger than 4.
+- Travel, passing time and accepting contracts are the host's; pilot portraits are not synced.
+- Rejoining a battle after a disconnect; saving during co-op combat.
+- Larger mod packs (BattleTech Advanced 3062) are untested.
+
+See [docs/DESIGN.md](docs/DESIGN.md) for the architecture, every test result, and what is
+verified versus assumed.
+
+## Playing
+
+Download the zip from [Releases](../../releases) (marked pre-release). Every player installs
+the same zip; it contains ModTek (unmodified, LGPL-2.1) and this mod, and
+`BattletechCoop-README.txt` inside has install, play and uninstall steps.
 
 Target game: Steam build 20387569, BattleTech 1.9.1 (686R). All players need to own the
 game and run the exact same mod list.
@@ -19,8 +47,8 @@ game and run the exact same mod list.
 | `src/BattletechCoop/Net/Core/` | Unity-free network core: transport interface, TCP transport, protocol, session |
 | `tests/NetTests/` | Headless tests for the network core (.NET 8 console, no packages) |
 | `docs/DESIGN.md` | Architecture, decisions, milestones |
-| `tools/` | Read-only analysis scripts (metadata dump, IL call graph) |
-| `ca/` | Checkout of [coop-anything](https://github.com/cranebeaker/coop-anything); research notes in `ca/games/battletech/NOTES.md` (own git repo, ignored here) |
+| `tools/` | Two-copy game test, release builder, read-only analysis scripts (metadata dump, IL call graph, IL dump) |
+| `ca/` | Local copy of [coop-anything](https://github.com/cranebeaker/coop-anything), ignored here |
 | `local/` | Private, ignored: copied game assemblies, dumps, logs |
 
 ## Building
@@ -58,6 +86,13 @@ zip into their game folder, so their mod fingerprints match.
   caught it. `-Shared` makes the Player 1 AI alternate between guest and host each activation,
   so half the orders are guest requests (shared control). It also requires accepted requests and
   none rejected.
+- Campaign missions by combat save: `-Combat -SaveTransfer` (skirmish through the same save
+  path).
+- Ship view: `-ShipView`; the host loads its newest campaign save read-only (`-coop-no-saves`
+  on both copies) and the guest must show the same company.
+- Ship changes: `-ShipRequests`; both copies make refits, pilot changes, hires, purchases,
+  sales, storage and readying, cancels, dismissals and a company rename; the final company
+  digests must match.
 - In game, **Ctrl+Shift+C** opens the co-op window: host or join over TCP, host via Steam,
   invite Steam friends, send test messages (including a 2 MB one), leave.
 
