@@ -101,3 +101,9 @@ zip into their game folder, so their mod fingerprints match.
 From coop-anything's `AGENTS.md`: never modify the real install or saves (test on a copy),
 no game files or decompiled source in git, test with bots, and record what has actually
 been verified.
+
+## License
+
+This mod's code is under the [MIT License](LICENSE). Release zips also contain ModTek, which
+is included unmodified under its own license (LGPL-2.1). BattleTech itself and its files are
+not part of this repository.
