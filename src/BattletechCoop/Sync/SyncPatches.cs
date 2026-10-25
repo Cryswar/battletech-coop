@@ -64,10 +64,12 @@ namespace BattletechCoop.Sync
             var session = CoopController.Instance?.Session;
             if (session == null || session.Role != SessionRole.Host || session.State != SessionState.Active) return;
             if (session.Players.Count() < 2 || CombatSync.Current != null) return;
-            // Campaign and Career contracts reach the guest as a combat save (M2); skirmish sends the
-            // contract, unless the -coop-save-transfer test switch asks for the save path.
+            // Campaign and Career contracts reach the guest as a combat save taken at the briefing and
+            // launched fresh from it (M2, MissionStart); skirmish sends the contract. (Skirmish can't
+            // take the save path since 0.0.13: a restart from a skirmish save lacks the lance's
+            // chassis data on the guest; -coop-test-mission covers the save path instead.)
             var skirmish = contract?.ContractTypeValue != null && contract.ContractTypeValue.IsSkirmish;
-            var viaSave = !skirmish || CoopController.Instance.SaveTransferTest;
+            var viaSave = !skirmish;
             try
             {
                 CombatSync.BeginAsHost(session, contract, CoopController.Instance.Autoplay, viaSave);
@@ -141,26 +143,7 @@ namespace BattletechCoop.Sync
         }
     }
 
-    // Test mode: press "Begin mission" as soon as the briefing enables it. (In normal play each
-    // player presses it; the guest's stream waits until its own combat has begun.)
-    [HarmonyPatch(typeof(BattleTech.UI.Briefing), "SetStartButtonActive")]
-    public static class AutoplayBeginPatch
-    {
-        static void Postfix(BattleTech.UI.Briefing __instance, bool isActive)
-        {
-            if (!isActive || CombatSync.Current == null || !CombatSync.Current.Autoplay) return;
-            Log.Info("SYNC: autoplay - pressing Begin mission");
-            Traverse.Create(__instance).Method("BeginPlaying").GetValue();
-        }
-    }
-
-    // "Begin mission" pressed (by a player or by autoplay): a combat loaded from the host's save
-    // starts playing here.
-    [HarmonyPatch(typeof(BattleTech.UI.Briefing), "BeginPlaying")]
-    public static class BeginPlayingPatch
-    {
-        static void Postfix() => CombatSync.Current?.OnBeginPlaying();
-    }
+    // "Begin mission" (shared, and pressed by the guest in test mode): MissionStart.
 
     [HarmonyPatch(typeof(CombatGameState), "OnCombatGameDestroyed")]
     public static class CombatEndPatch

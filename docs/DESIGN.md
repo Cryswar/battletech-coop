@@ -150,9 +150,8 @@ and so would rejoining a battle later.
   `-coop-no-saves` blocks saving in test copies, which share the owner's Steam Cloud saves.
 - Between missions the guest stays in the host's campaign as it was at mission start, unsaved.
   That is the first, read-only form of the shared ship view; each new mission brings a fresh save.
-- Skirmish keeps the contract path. `-coop-save-transfer` (test) makes skirmish use the
-  combat-save path too, so the two-copy test exercises save, load and resume end to end without
-  touching any campaign save.
+- Skirmish keeps the contract path. (`-coop-save-transfer`, which sent skirmishes through the
+  save path for testing, was retired in 0.0.13: see "Mission start".)
 
 Implementation notes and results (2026-10-17):
 
@@ -205,6 +204,77 @@ Reported issues:
 Not yet tested: a real Campaign or Career mission (story scripts, Flashpoints, a non-skirmish
 `SimGameState` on both sides), loading while the guest is in the SimGame rather than the main
 menu, Ironman campaigns, and the mission-end and AAR flow back to the ship on the guest.
+
+#### Mission start (0.0.13): both players watch the opening
+
+Problem (human test 0.0.7): the guest missed the mission's opening. The combat save was taken at
+the first point where `CombatGameState.CanSave` holds, which is after the opening: the camera
+intro and dropship landing (`TurnDirector.CheckCameraIntroAndDropshipComplete`), then
+`ShowMissionStartDialogue`; its `DialogComplete` lets `CheckGameBegin` start round 1.
+
+Findings (build 20387569):
+
+- `GameInstance.CreateCombatFromSave` has a second path: when the save is flagged for a
+  combat restart (`GameInstanceSave.flaggedForRestart`, normally set when the save's combat
+  version is out of date) it calls `Contract.ResetStateForRestart`, `CombatHydrate` and
+  `LaunchContract`: the campaign state comes from the save and the saved contract starts fresh,
+  intro and opening dialogue included. `LoadTransitioning.CheckAndHandleCombatRestart` shows a
+  "mission save out of date" popup first; its RESTART button only calls `ProcessLoadedFile`.
+- `ResetStateForRestart` reloads the mission definition (`ContractOverride`) from the game data,
+  and the launch rolls its tagged lances and units again (`LanceOverride.RequestLance`,
+  `UnitSpawnPointOverride.RequestUnit` re-select whenever the definition is tagged). First run:
+  host 2 enemy 'Mechs, guest 3, other loadouts.
+- A load started from the briefing (`ProcessLoadedFile` while the briefing is up) never gets to
+  `CreateCombatFromSave`, even after the loading curtain has gone.
+- Conversations are `InterruptDialogSequence`s: Continue hides the dialog box, whose callback is
+  `AfterDialogHide` -> `PlayNextMessage` -> `Play(next line)` (it returns a
+  `SimGameConversationManager.ConversationState`, not a bool). Side chatter is
+  `AsyncDialogSequence` on timers (`CombatHUDDialogItem`), skippable with Space/Esc.
+
+Design:
+
+- **The save is taken at the host's briefing** (`Briefing.SetStartButtonActive(true)`, once the
+  loading curtain is gone), before anything has happened, and the guest loads it flagged for a
+  restart (popup skipped). Both sides then launch the same mission: the host from its live
+  campaign, the guest from the saved one. The host no longer reloads (it sees the briefing once);
+  the old reason for its reload, a resumed battle differing from the live one, does not apply to
+  two fresh launches.
+- **Lance pins.** With the save the host sends what its launch picked for every non-player
+  team (selected lance def, unit def and type, pilot def per spawn point); a postfix on the
+  guest's `ResetStateForRestart` writes them into the reloaded definition as explicit IDs, so
+  its launch builds the same units.
+- **Shared "Begin mission".** `Briefing.BeginPlaying` is held until every player's briefing is
+  loaded; whoever presses it starts the mission for everyone (the guest's press goes through the
+  host). Intro, dropship and side chatter then run on matching timers.
+- **Conversation lines advance together.** Either player's Continue (or skip) goes through the
+  host, which advances its own copy and tells the guests to advance the same line; a guest that
+  is a line behind applies the steps in order once it shows that line.
+
+Tests: `two-copy-test.ps1 -MissionStart` (host `-coop-test-shipview -coop-test-mission
+-coop-autoplay`): the host loads its newest career save, sends the ship, then launches the first
+ordinary contract the way the lance screen's Accept does (`SimGameState.OnContractReady`; the
+test also fills the contract's own lance, which the lance screen normally does). In test mode
+the guest presses Begin and the two sides press Continue on alternate lines. It requires both
+sides to finish the opening dialogue, identical dialogue lines in the same order, steps from
+both sides, then `-TargetSeq` stream items with no desync.
+
+Results (2026-10-25, career save 'Avalanche's Marauders', contract 'Aggressive Intrusion'):
+
+- First runs: the host's own reload from the briefing stalled in `ProcessLoadedFile` (twice,
+  also after waiting for the curtain), hence no host reload. Then the guest's restart re-rolled
+  the enemies (host 6 actors, guest 7), hence the lance pins. One build broke every patch:
+  `AfterDialogHide`'s `__result` was declared `bool`, HarmonyX refused it, and `PatchAll` stops at
+  the first failure.
+- With pins: **PASS**, both 8 actors (10 picks pinned: a vehicle lance of Galleon and Strikers),
+  the same 3 opening lines on both ("We've got them, Commander..." to "...Oliveira out."), the
+  guest's Continue used once, both "opening dialogue complete" 0.05 s apart, then 54 stream items
+  with no desync. Long run: **PASS**, 212 stream items, no desync. `-Combat -Shared` (skirmish,
+  now also with the shared Begin): **PASS**, 60 items.
+- Unattended test runs at night need the display on: both copies hung at "Input initialized"
+  until the test process asked Windows to keep the display on (`SetThreadExecutionState` with
+  `ES_DISPLAY_REQUIRED`, for the run only).
+- Not tested yet: story missions and Flashpoints (scripted openings with more conversations),
+  a human pressing Continue on the guest, and Space/Esc skips of side chatter.
 
 ### Unit ownership (two lances)
 

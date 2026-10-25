@@ -6,13 +6,14 @@
 A mod that lets 2+ players play the BattleTech (2018) single-player campaign together over
 Steam. The host owns the campaign; friends join it.
 
-## Status (0.0.12)
+## Status (0.0.13)
 
 Works, tested by hand over Steam and by automated two-copy tests:
 
-- **Missions:** co-op skirmish, Campaign and Career missions. Lockstep on the game's own
-  orders with desync detection; every player can command every 'Mech of the player lance
-  (shared control).
+- **Missions:** co-op skirmish, Campaign and Career missions. Lockstep on the game's own orders
+  with desync detection; every player can command every 'Mech of the player lance (shared
+  control). New in 0.0.13, so far tested only by the automated test: both players watch the
+  intro and the opening conversation, and either player's Continue moves it on for both.
 - **Ship between missions:** friends see the host's company and can refit, repair, rename,
   ready, store and scrap 'Mechs, train, rename, hire and dismiss pilots, buy and sell in the
   Store, cancel work orders and customize the company. The host's game applies those changes,
@@ -21,7 +22,6 @@ Works, tested by hand over Steam and by automated two-copy tests:
 
 Not done yet:
 
-- Friends miss the conversation at the start of a mission.
 - Each player having their own lance (ownership), and drops larger than 4.
 - Travel, passing time and accepting contracts are the host's; pilot portraits are not synced.
 - Rejoining a battle after a disconnect; saving during co-op combat.

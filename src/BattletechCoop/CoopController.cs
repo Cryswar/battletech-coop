@@ -27,8 +27,10 @@ namespace BattletechCoop
     //   -coop-autoskirmish [map]    (host) once a guest has joined, launch a fixed skirmish
     //   -coop-timescale <x>         Unity time scale during combat (speeds up bot tests)
     //   -coop-inject-desync <seq>   (guest) corrupt state before that stream item, to test desync detection
-    //   -coop-save-transfer         (host) send skirmishes to the guest as a combat save, like campaign missions
     //   -coop-no-saves              never write saves (test copies share the owner's Steam Cloud saves)
+    //   -coop-test-shipview         (host) once a guest is in its menu, load the newest campaign save
+    //   -coop-test-requests         (both) make scripted ship changes once the ship is showing
+    //   -coop-test-mission          (host) after the ship went out, launch the first ordinary contract
     //   +connect_lobby <id>         join a Steam lobby (Steam passes this when launching from an invite)
     public class CoopController : MonoBehaviour
     {
@@ -38,7 +40,6 @@ namespace BattletechCoop
         public static CoopController Instance { get; private set; }
         public CoopSession Session { get; private set; }
         public Sync.AutoplayMode Autoplay { get; private set; }
-        public bool SaveTransferTest { get; private set; }
 
         private bool autoSkirmish;
         private string autoSkirmishMap;
@@ -111,10 +112,10 @@ namespace BattletechCoop
                         autoSkirmish = true;
                         if (hasValue && !args[i + 1].StartsWith("-")) autoSkirmishMap = args[i + 1];
                         break;
-                    case "-coop-save-transfer": SaveTransferTest = true; break;
                     case "-coop-test-rehost": rehostTestRounds = 3; break;
                     case "-coop-test-shipview": shipViewTest = true; break;
                     case "-coop-test-requests": Sync.ShipRequestTest.Enabled = true; break;
+                    case "-coop-test-mission": Sync.MissionTest.Enabled = true; break;
                     case "-coop-no-saves": Sync.SaveGuard.NoSavesFlag = true; break;
                     case "-coop-deep-state": Sync.StateText.Deep = true; break;
                     case "-coop-inject-desync":
@@ -253,6 +254,11 @@ namespace BattletechCoop
                 Sync.ShipView.HandleGameMessage(Session, channel, payload);
                 return;
             }
+            if (Sync.MissionStart.Handles(channel))
+            {
+                Sync.MissionStart.HandleGameMessage(Session, sender, channel, payload);
+                return;
+            }
             if (channel == Sync.ShipRequests.ChannelRequest || channel == Sync.ShipRequests.ChannelReply
                 || channel == Sync.ShipRequests.ChannelUpdate)
             {
@@ -332,6 +338,7 @@ namespace BattletechCoop
                 Sync.CombatSync.Current?.Update();
                 Sync.ShipView.Update(Session);
                 Sync.ShipRequests.Update();
+                Sync.MissionStart.Update();
                 Sync.CombatSync.UpdateIdleGuest(Session);
                 UpdateTestModes();
             }
@@ -383,6 +390,7 @@ namespace BattletechCoop
         {
             UpdateShipViewTest();
             Sync.ShipRequestTest.Update();
+            Sync.MissionTest.Update();
             // Only with -coop-timescale, so normal play (including the game's own pause) is untouched.
             if (!Mathf.Approximately(combatTimeScale, 1f))
             {
@@ -420,6 +428,8 @@ namespace BattletechCoop
                     && UnityGameInstance.BattleTechGame?.Simulation != null && UnityGameInstance.BattleTechGame.Combat == null)
                     GUI.Label(new Rect(Screen.width / 2 - 300, 4, 600, 22),
                         $"Viewing {Sync.ShipView.GuestCompany} (the host's company). Refits, repairs and pilot changes go to the host; other changes are not kept.");
+                if (Time.realtimeSinceStartup < Sync.MissionStart.NoticeUntil)
+                    GUI.Label(new Rect(Screen.width / 2 - 300, 48, 600, 44), Sync.MissionStart.Notice);
                 if (Time.realtimeSinceStartup < Sync.ShipRequests.NoticeUntil)
                     GUI.Label(new Rect(Screen.width / 2 - 300, 26, 600, 44), Sync.ShipRequests.Notice);
                 var sync = Sync.CombatSync.Current;

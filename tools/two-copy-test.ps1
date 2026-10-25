@@ -25,6 +25,7 @@ param(
     # same company, funds, day and system the host sent.
     [switch]$ShipView,
     [switch]$ShipRequests,
+    [switch]$MissionStart,
     [int]$TargetSeq = 60,
     [double]$TimeScale = 3,
     [string]$Map = '',
@@ -66,12 +67,18 @@ $guestArgs = @('-coop-join-tcp', "127.0.0.1:$Port", '-coop-name', 'GuestBot', '-
 if ($Combat) {
     $hostArgs += @($(if ($Shared) { '-coop-autoplay-shared' } else { '-coop-autoplay' }), '-coop-autoskirmish')
     if ($Map) { $hostArgs += $Map }
-    if ($SaveTransfer) { $hostArgs += '-coop-save-transfer' }
+    if ($SaveTransfer) { throw '-SaveTransfer was retired in 0.0.13; use -MissionStart for the save path' }
     if ($DeepState) { $hostArgs += '-coop-deep-state'; $guestArgs += '-coop-deep-state' }
     $ts = $TimeScale.ToString([System.Globalization.CultureInfo]::InvariantCulture)
     $hostArgs += @('-coop-timescale', $ts)
     $guestArgs += @('-coop-timescale', $ts)
     if ($InjectDesyncAt -gt 0) { $guestArgs += @('-coop-inject-desync', "$InjectDesyncAt") }
+} elseif ($MissionStart) {
+    # Career save on the host, ship to the guest, then a contract with the AI on both lances.
+    $hostArgs += @('-coop-test-shipview', '-coop-test-mission', '-coop-autoplay')
+    $ts = $TimeScale.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    $hostArgs += @('-coop-timescale', $ts)
+    $guestArgs += @('-coop-timescale', $ts)
 } elseif ($ShipView -or $ShipRequests) {
     $hostArgs += '-coop-test-shipview'
     if ($ShipRequests) { $guestArgs += '-coop-test-requests'; $hostArgs += '-coop-test-requests' }
@@ -90,7 +97,41 @@ try {
     $guestProc = Start-Process "$GuestDir\BattleTech.exe" -WorkingDirectory $GuestDir -PassThru -ArgumentList ($guestArgs + $window)
     Write-Host "guest pid $($guestProc.Id)"
 
-    if ($ShipRequests) {
+    if ($MissionStart) {
+        # Both sides finish the opening dialogue, show the same lines in the same order, used both
+        # sides' Continue, then keep in lockstep without a desync.
+        $lastReport = Get-Date
+        while ($true) {
+            if ((Get-Date) -gt $deadline) { $reason = "timed out after $TimeoutSeconds s"; break }
+            if ($hostProc.HasExited) { $reason = "host exited (code $($hostProc.ExitCode))"; break }
+            if ($guestProc.HasExited) { $reason = "guest exited (code $($guestProc.ExitCode))"; break }
+            $h = Read-Log $hostLog; $g = Read-Log $guestLog
+            $bad = @($h + $g | Where-Object { $_ -cmatch 'DESYNC|\[ERROR\]' })
+            if ($bad.Count -gt 0) { $reason = "error or desync: $($bad[0])"; break }
+            $hDone = @($h | Where-Object { $_ -match 'MISSION opening dialogue complete' }).Count -gt 0
+            $gDone = @($g | Where-Object { $_ -match 'MISSION opening dialogue complete' }).Count -gt 0
+            $applied = 0
+            foreach ($line in $g) { if ($line -match 'SYNC guest: seq (\d+) ') { $applied = [int]$Matches[1] } }
+            if ($hDone -and $gDone -and $applied -ge $TargetSeq) {
+                $hl = @($h | Where-Object { $_ -match 'MISSION dialog (.*)$' } | ForEach-Object { ($_ -split 'MISSION dialog ', 2)[1] })
+                $gl = @($g | Where-Object { $_ -match 'MISSION dialog (.*)$' } | ForEach-Object { ($_ -split 'MISSION dialog ', 2)[1] })
+                $guestAsked = @($g | Where-Object { $_ -match 'MISSION guest asks to advance' }).Count
+                $guestFollowed = @($g | Where-Object { $_ -match 'MISSION guest follows the host' }).Count
+                $hostAdvanced = @($h | Where-Object { $_ -match 'MISSION host advances' }).Count
+                $same = ($hl.Count -gt 0) -and ($hl.Count -eq $gl.Count) -and (@(Compare-Object $hl $gl -SyncWindow 0).Count -eq 0)
+                $passed = $same -and $guestAsked -gt 0 -and $guestFollowed -gt 0 -and $hostAdvanced -gt 0
+                $reason = "dialogue lines host $($hl.Count) guest $($gl.Count) same=$same; host advanced $hostAdvanced, guest asked $guestAsked, guest followed $guestFollowed; guest applied $applied stream items"
+                if (-not $same) { Compare-Object $hl $gl -SyncWindow 0 | ForEach-Object { Write-Host "LINE $(if ($_.SideIndicator -eq '<=') { 'host ' } else { 'guest' }): $($_.InputObject)" } }
+                break
+            }
+            if (((Get-Date) - $lastReport).TotalSeconds -ge 30) {
+                Write-Host "... host dialogue done=$hDone, guest dialogue done=$gDone, guest applied $applied"
+                $lastReport = Get-Date
+            }
+            Start-Sleep -Seconds 2
+        }
+    }
+    elseif ($ShipRequests) {
         $done = Wait-ForLog $guestLog 'SHIP test: guest pilot now' $guestProc $deadline
         $end = (Get-Date).AddSeconds(20)
         while ((Get-Date) -lt $end -and (@(Read-Log $guestLog | Where-Object { $_ -match 'SHIP guest: host (applied|refused)' }).Count -lt 4 -or
